@@ -1,0 +1,17 @@
+{
+  "modelId": "acme/video-pro",
+  "schema": {
+    "type": "object",
+    "required": ["prompt"],
+    "properties": {
+      "prompt": { "type": "string", "description": "What should happen." },
+      "start_image_url": { "type": "string", "format": "uri", "description": "First frame." },
+      "image": { "type": "string", "description": "Legacy image field." },
+      "duration": { "type": "string", "enum": ["5", "10"], "default": "5" },
+      "aspect_ratio": { "type": "string", "enum": ["16:9", "9:16", "1:1"] },
+      "seed": { "type": "integer" },
+      "generate_audio": { "type": "boolean" },
+      "negative_prompt": { "type": "string" }
+    }
+  }
+}

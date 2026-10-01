@@ -1,0 +1,59 @@
+{
+  "name": "aitopia",
+  "version": "0.1.0",
+  "description": "Command-line client for AITOPIA: generate images, video and audio, run editing tools, check credits and download results.",
+  "type": "module",
+  "bin": {
+    "aitopia": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.build.json",
+    "lint": "tsc --noEmit && eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run lint && npm test && npm run build"
+  },
+  "keywords": [
+    "aitopia",
+    "cli",
+    "mcp",
+    "ai",
+    "image-generation",
+    "video-generation",
+    "audio-generation",
+    "text-to-speech"
+  ],
+  "author": "AITOPIA",
+  "license": "MIT",
+  "homepage": "https://github.com/AITOPIAai/cli#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AITOPIAai/cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AITOPIAai/cli/issues"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "commander": "^14.0.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^20.19.43",
+    "eslint": "^10.11.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.0",
+    "vitest": "^4.1.11"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
