@@ -16,12 +16,13 @@ import { videoCommand } from '../src/commands/video.js';
 import { creditsCommand } from '../src/commands/credits.js';
 import { toolsCommand } from '../src/commands/tools.js';
 import { loginCommand } from '../src/commands/login.js';
-import { CliError } from '../src/errors.js';
+import { CliError, failureToError } from '../src/errors.js';
 import { clearReadyResults, reportInterrupt } from '../src/interrupt.js';
 import { jsonStatus } from '../src/cli.js';
 import { batchCommand } from '../src/commands/batch.js';
 import { runCommand } from '../src/commands/run.js';
 import { statusCommand } from '../src/commands/status.js';
+import { editCommand } from '../src/commands/edit.js';
 
 // A local stand-in for the AITOPIA MCP server (no internet involved). Shapes
 // follow scotty's src/mcp: media-tool-executor.ts (generate_image,
@@ -186,12 +187,145 @@ function generateBatch(args: Record<string, unknown>) {
   });
 }
 
+// edit_media (scotty src/mcp edit-media): a planned chain of model / agent /
+// ffmpeg steps, index 1..n. Instructions steer the fake: "planner down" ->
+// PLAN_UNAVAILABLE, "break" -> step 2 fails mid-chain (a non-error
+// {status:"partial"}), "inline" -> finishes in the first answer; anything
+// else runs in the background as edit-1 and is polled.
+const EDIT_STEPS = [
+  { kind: 'model', id: 'bria/remove-background', displayName: 'Bria Remove Background', why: 'Cuts the subject out cleanly.', credits: 2, basis: '1 image x 2 credits.' },
+  { kind: 'model', id: 'topaz/image-upscale', displayName: 'Topaz Image Upscale', why: 'Sharpens it to 4K.', credits: 4, basis: '1 image at 4K x 4 credits.' },
+  { kind: 'ffmpeg', id: 'resize', displayName: 'Resize', why: 'Pads it to 9:16 for a story.', credits: 0, basis: 'Editing tools are free.' },
+];
+const EDIT_SUMMARY = 'Remove the background, upscale to 4K, then pad to 9:16.';
+const EDIT_TOTAL = 6;
+const stepUrl = (n: number) => `${base}/files/edit-step-${n}.png`;
+
+function editPlan(statuses: string[] = []) {
+  return {
+    summary: EDIT_SUMMARY,
+    steps: EDIT_STEPS.map((step, i) => {
+      const status = statuses[i];
+      return {
+        index: i + 1,
+        ...step,
+        ...(status ? { status } : {}),
+        ...(status === 'completed' ? { assetUrl: stepUrl(i + 1), assetName: `Fox step ${i + 1}`, creationUrl: `https://aitopia.ai/creations/s${i + 1}` } : {}),
+      };
+    }),
+  };
+}
+
+const EDIT_DONE = () => ({
+  status: 'completed',
+  assetUrl: stepUrl(3),
+  assetName: 'Fox story',
+  creationUrl: 'https://aitopia.ai/creations/e1',
+  mediaType: 'image',
+  plan: editPlan(['completed', 'completed', 'completed']),
+  totalCredits: EDIT_TOTAL,
+  openInAitopia: 'https://aitopia.ai/c/e1',
+});
+
+const EDIT_PARTIAL = () => ({
+  status: 'partial',
+  code: 'UPSTREAM_ERROR',
+  error: 'Topaz Image Upscale could not process this image.',
+  failedStep: 2,
+  retryable: false,
+  lastAssetUrl: stepUrl(1),
+  items: [{ index: 1, status: 'completed', kind: 'model', id: 'bria/remove-background', assetUrl: stepUrl(1), assetName: 'Fox step 1', creationUrl: 'https://aitopia.ai/creations/s1' }],
+  plan: editPlan(['completed', 'failed', 'skipped']),
+  totalCredits: 2,
+  openInAitopia: 'https://aitopia.ai/c/e2',
+  note: 'Step 1 finished and is saved in AITOPIA; nothing after step 2 ran.',
+});
+
+function editMedia(args: Record<string, unknown>) {
+  const instruction = String(args.instruction ?? '');
+  if (typeof args.assetUrl !== 'string' || !args.assetUrl) return fail({ code: 'INVALID_INPUT', error: 'assetUrl is required.', retryable: false });
+  if (instruction.includes('planner down')) {
+    return fail({ code: 'PLAN_UNAVAILABLE', error: 'The edit planner is not available right now. Nothing was spent.', retryable: true });
+  }
+  if (instruction.includes('rate store down')) {
+    return fail({ code: 'PLAN_UNAVAILABLE', error: 'Edits are unavailable right now (the rate store is down). Nothing was spent.', retryable: true });
+  }
+  if (instruction.includes('unknown price')) {
+    // With or without maxCredits / dryRun: the plan comes back, nothing runs.
+    const plan = editPlan();
+    plan.steps[1] = { ...plan.steps[1], credits: null as unknown as number } as (typeof plan.steps)[number];
+    return fail({ code: 'PRICE_UNKNOWN', error: 'Topaz Image Upscale lists no price, so this edit cannot be priced. Nothing ran.', retryable: false, details: { plan } });
+  }
+  const maxCredits = typeof args.maxCredits === 'number' ? args.maxCredits : undefined;
+  if (instruction.includes('already')) {
+    const plan = editPlan(['completed']);
+    return ok({
+      ...EDIT_DONE(),
+      assetUrl: stepUrl(1),
+      noTransformNeeded: true,
+      plan: { ...plan, steps: plan.steps.slice(0, 1).map((st) => ({ ...st, id: 'resize', kind: 'ffmpeg', displayName: 'Resize', credits: 0, unchanged: true })) },
+      totalCredits: 0,
+    });
+  }
+  if (args.dryRun === true) {
+    const affordable = balance >= EDIT_TOTAL;
+    const estimate = {
+      status: 'estimate',
+      dryRun: true,
+      mediaType: 'image',
+      plan: instruction.includes('estimated')
+        ? { ...editPlan(), steps: editPlan().steps.map((st) => (st.index === 2 ? { ...st, creditsEstimated: true } : st)) }
+        : editPlan(),
+      totalCredits: EDIT_TOTAL,
+      complete: true,
+      balance: { creditsForGeneration: balance },
+      affordable,
+      ...(affordable ? {} : { buyCreditsUrl: 'https://aitopia.ai/pricing', hint: 'Do not start it.' }),
+      ...(maxCredits !== undefined ? { maxCredits, withinBudget: EDIT_TOTAL <= maxCredits } : {}),
+      planToken: 'plan-token-abcdefghijkl',
+      planTokenExpiresInSec: 3600,
+      note: 'Estimate only: nothing was submitted, reserved or charged.',
+    };
+    // Planning took longer than the inline wait: the estimate comes through the run token.
+    if (instruction.includes('slow plan')) {
+      runStates['edit-plan'] ??= [{ status: 'running', tool: 'edit_media', runToken: 'edit-plan', pollAfterMs: 2000 }, estimate];
+      return ok({ status: 'running', tool: 'edit_media', runToken: 'edit-plan', pollAfterMs: 2000 });
+    }
+    return ok(estimate);
+  }
+  if (args.planToken !== undefined && args.planToken !== 'plan-token-abcdefghijkl') {
+    return fail({ code: 'PLAN_EXPIRED', error: 'The planToken has expired. Nothing was run or charged; run a new dryRun.', retryable: false });
+  }
+  if (maxCredits !== undefined && maxCredits < EDIT_TOTAL) {
+    return fail({
+      code: 'OVER_BUDGET',
+      error: `The plan costs ${EDIT_TOTAL} credits, more than maxCredits (${maxCredits}). Nothing ran.`,
+      retryable: false,
+      details: { plan: editPlan(), totalCredits: EDIT_TOTAL, maxCredits },
+    });
+  }
+  if (instruction.includes('inline')) return ok(EDIT_DONE());
+  if (instruction.includes('poll fails')) {
+    // The provider could not be checked 10 times in a row (hard failure via get_run_status).
+    runStates['edit-poll'] ??= [{ status: 'failed', code: 'POLL_FAILED', error: 'Topaz Image Upscale could not be checked 10 times in a row; it may still finish.', retryable: false, details: { failedStep: 2 } }];
+    return ok({ status: 'running', tool: 'edit_media', runToken: 'edit-poll', pollAfterMs: 2000 });
+  }
+  if (instruction.includes('poll partial')) {
+    return ok({ ...EDIT_PARTIAL(), code: 'POLL_FAILED', error: 'The provider could not be checked 10 times in a row; the step may still finish.' });
+  }
+  const runToken = instruction.includes('break') ? 'edit-broken' : 'edit-1';
+  runStates[runToken] ??= [{ status: 'running', tool: 'edit_media', runToken, pollAfterMs: 2000, progress: 40 }, instruction.includes('break') ? { ...EDIT_PARTIAL(), ...(instruction.includes('credits') ? { code: 'INSUFFICIENT_CREDITS', error: 'Not enough credits for step 2.' } : {}) } : EDIT_DONE()];
+  return ok({ status: 'running', tool: 'edit_media', runToken, pollAfterMs: 2000 });
+}
+
 function tool(name: string, args: Record<string, unknown>) {
   switch (name) {
     case 'get_run_status':
       return runStatus(args);
     case 'generate_batch':
       return generateBatch(args);
+    case 'edit_media':
+      return editMedia(args);
     case 'get_credit_balance':
       // Agent-scoped plan: the account reads unlimited, generations spend agentBalance.
       return ok({
@@ -326,9 +460,17 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     const progressToken = request.params._meta?.progressToken;
     calls.push({ name: request.params.name, args, ...(progressToken !== undefined ? { progressToken } : {}) });
-    if (progressToken !== undefined && request.params.name !== 'get_run_status') {
+    const editPoll = request.params.name === 'get_run_status' && String(args.runToken ?? '').startsWith('edit-');
+    if (progressToken !== undefined && (request.params.name !== 'get_run_status' || editPoll)) {
       // tool-progress.ts: one at once, then every ~3 s with the elapsed seconds.
-      const label = request.params.name === 'generate_batch' ? 'Running 3 generations' : 'Generating image with Nano Banana 2';
+      const label =
+        request.params.name === 'generate_batch'
+          ? 'Running 3 generations'
+          : request.params.name === 'edit_media'
+            ? 'Step 1/3 · Removing the background with Bria Remove Background'
+            : editPoll
+              ? 'Step 2/3 · Upscaling with Topaz Image Upscale'
+              : 'Generating image with Nano Banana 2';
       await extra.sendNotification({ method: 'notifications/progress', params: { progressToken, progress: 0, message: label } });
       await extra.sendNotification({ method: 'notifications/progress', params: { progressToken, progress: 3, message: `${label} — 3 s` } });
       if (progressDelayMs) await new Promise((r) => setTimeout(r, progressDelayMs));
@@ -1015,4 +1157,265 @@ describe('review fixes', () => {
     expect(stderr.text).toContain('Waiting for 1 of 3');
     expect(stderr.text).not.toContain('Waiting for 3');
   }, 15_000);
+});
+
+describe('edit', () => {
+  const photoUrl = 'https://cdn.aitopia.ai/fox.png';
+
+  it('--dry-run shows the numbered plan with kinds, why and credits, then the total; nothing runs', async () => {
+    await editCommand(ctx(), photoUrl, ['remove the background, upscale, make it 9:16'], { dryRun: true });
+    expect(calls.map((c) => c.name)).toEqual(['edit_media']);
+    expect(calls[0]?.args).toEqual({ assetUrl: photoUrl, instruction: 'remove the background, upscale, make it 9:16', mediaType: 'image', dryRun: true });
+    expect(stdout.text).toContain(`Plan: ${EDIT_SUMMARY}`);
+    expect(stdout.text).toContain('  1. Bria Remove Background (model) · 2 credits');
+    expect(stdout.text).toContain('     Cuts the subject out cleanly.');
+    expect(stdout.text).toContain('  3. Resize (ffmpeg) · 0 credits');
+    expect(stdout.text).toContain('Total: 6 credits');
+    expect(stdout.text).toContain('Balance: 8,951 credits available');
+    expect(stdout.text).toContain('Nothing was run or charged.');
+  });
+
+  it('--dry-run of a local file prints a --plan command; --plan runs it on the uploaded file without uploading again', async () => {
+    const photo = join(dir, 'fox.png');
+    writeFileSync(photo, 'png');
+    await editCommand(ctx(), photo, ['remove the background'], { dryRun: true });
+    expect(stdout.text).toContain('To run exactly this plan at this price (within 1 hour):');
+    expect(stdout.text).toContain(`aitopia edit ${photo} 'remove the background' --plan=plan-token-abcdefghijkl`);
+    const uploaded = calls.find((c) => c.name === 'edit_media')?.args.assetUrl;
+    calls.length = 0;
+    await editCommand(ctx(), photo, ['remove', 'the', 'background'], { plan: 'plan-token-abcdefghijkl', output: dir, force: true });
+    expect(calls.map((c) => c.name)[0]).toBe('edit_media');
+    expect(calls.some((c) => c.name === 'upload_asset')).toBe(false);
+    expect(calls[0]?.args).toMatchObject({ assetUrl: uploaded, instruction: 'remove the background', planToken: 'plan-token-abcdefghijkl' });
+  });
+
+  it('--plan refuses another instruction, a changed file, and --dry-run; an unknown token is the server\'s PLAN_EXPIRED', async () => {
+    const photo = join(dir, 'fox.png');
+    writeFileSync(photo, 'png');
+    await editCommand(ctx(), photo, ['remove the background'], { dryRun: true });
+    calls.length = 0;
+    await expect(editCommand(ctx(), photo, ['upscale'], { plan: 'plan-token-abcdefghijkl' })).rejects.toThrow(/another file or instruction/);
+    await expect(editCommand(ctx(), photo, ['upscale'], { plan: 'plan-token-abcdefghijkl', dryRun: true })).rejects.toThrow(/leave out --dry-run/);
+    writeFileSync(photo, 'png, edited since');
+    await expect(editCommand(ctx(), photo, ['remove the background'], { plan: 'plan-token-abcdefghijkl' })).rejects.toThrow(/has changed since the --dry-run/);
+    expect(calls).toHaveLength(0);
+    const error = await editCommand(ctx(), photoUrl, ['upscale'], { plan: 'unknown-token-0000000' }).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: 'PLAN_EXPIRED' });
+  });
+
+  it('--dry-run waits for the estimate when planning outlasts the inline wait', async () => {
+    await editCommand(ctx(), photoUrl, ['slow plan: upscale'], { dryRun: true });
+    expect(calls.map((c) => c.name)).toEqual(['edit_media', 'get_run_status', 'get_run_status']);
+    expect(stdout.text).toContain(`Plan: ${EDIT_SUMMARY}`);
+    expect(stdout.text).toContain('Total: 6 credits');
+    expect(stdout.text).toContain('Nothing was run or charged.');
+  });
+
+  it('--dry-run with a short balance says not enough credits and still returns (exit 0)', async () => {
+    balance = 3;
+    await editCommand(ctx(), photoUrl, ['upscale'], { dryRun: true });
+    expect(stdout.text).toContain('Not enough credits for this edit.');
+    expect(stdout.text).toContain('Buy credits: https://aitopia.ai/pricing');
+  });
+
+  it('runs once, prints the plan and each step as it starts, polls with wait and saves <name>-edited', async () => {
+    const out = join(dir, 'edits');
+    await editCommand(ctx(), `${base}/files/fox.png`, ['remove the background'], { output: `${out}/` });
+    expect(calls.map((c) => c.name)).toEqual(['edit_media', 'get_run_status', 'get_run_status']);
+    expect(calls[0]?.progressToken).toBeDefined();
+    expect(calls[1]?.args).toEqual({ runToken: 'edit-1', wait: 20 });
+    expect(stdout.text).toContain(`Plan: ${EDIT_SUMMARY}`);
+    expect(stderr.text).toContain('Step 1/3 · Removing the background with Bria Remove Background');
+    expect(stderr.text).toContain('Step 2/3 · Upscaling with Topaz Image Upscale');
+    expect(stderr.text).not.toContain('Topaz Image Upscale — 3 s');
+    expect(readdirSync(out)).toEqual(['fox-edited.png']);
+    expect(stdout.text).toContain('Saved');
+    expect(stdout.text).toContain('Total: 6 credits');
+    expect(stdout.text).toContain('Open in AITOPIA: https://aitopia.ai/c/e1');
+  }, 15_000);
+
+  it('--keep-steps also saves every intermediate file as <name>-step-N', async () => {
+    const out = join(dir, 'steps');
+    await editCommand(ctx(), photoUrl, ['inline: remove the background'], { output: `${out}/`, keepSteps: true });
+    expect(readdirSync(out).sort()).toEqual(['fox-edited-step-1.png', 'fox-edited-step-2.png', 'fox-edited.png']);
+  });
+
+  it('--keep-steps with -o <file> names the steps after that file', async () => {
+    const out = join(dir, 'named');
+    await editCommand(ctx(), photoUrl, ['inline'], { output: join(out, 'story.png'), keepSteps: true });
+    expect(readdirSync(out).sort()).toEqual(['story-step-1.png', 'story-step-2.png', 'story.png']);
+  });
+
+  it('a step failing mid-chain saves the finished step, exits 1 with the error and keeps the plan in the data', async () => {
+    const out = join(dir, 'broken');
+    const error = (await editCommand(ctx(), photoUrl, ['break it'], { output: `${out}/` }).catch((e: unknown) => e)) as CliError;
+    expect(error).toBeInstanceOf(CliError);
+    expect(error.exitCode).toBe(1);
+    expect(error.code).toBe('UPSTREAM_ERROR');
+    expect(error.message).toBe('Step 2 (Topaz Image Upscale) failed: Topaz Image Upscale could not process this image.');
+    expect(error.hint).toContain('do not run them again');
+    expect(readdirSync(out)).toEqual(['fox-edited-step-1.png']);
+    expect(stdout.text).toContain('(step 1)');
+    expect(error.data.files).toEqual([join(out, 'fox-edited-step-1.png')]);
+    expect(jsonStatus(error)).toBe('partial');
+    expect(calls.filter((c) => c.name === 'edit_media')).toHaveLength(1);
+    expect(error.notes).toContain('Open in AITOPIA: https://aitopia.ai/c/e2');
+  }, 15_000);
+
+  it('OVER_BUDGET: exit 1, shows the plan and the total, nothing ran', async () => {
+    const error = (await editCommand(ctx(), photoUrl, ['upscale'], { maxCredits: 3 }).catch((e: unknown) => e)) as CliError;
+    expect(calls[0]?.args.maxCredits).toBe(3);
+    expect(error.exitCode).toBe(1);
+    expect(error.code).toBe('OVER_BUDGET');
+    expect(error.message).toBe('This edit needs 6 credits, more than your limit of 3 credits.');
+    expect(error.hint).toContain('Nothing ran');
+    expect(stdout.text).toContain('  2. Topaz Image Upscale (model) · 4 credits');
+    expect(stdout.text).toContain('Total: 6 credits');
+    expect(calls.map((c) => c.name)).toEqual(['edit_media']);
+  });
+
+  it('PLAN_UNAVAILABLE: exit 1, says nothing was spent', async () => {
+    const error = (await editCommand(ctx(), photoUrl, ['planner down'], {}).catch((e: unknown) => e)) as CliError;
+    expect(error.exitCode).toBe(1);
+    expect(error.code).toBe('PLAN_UNAVAILABLE');
+    expect(error.hint).toContain('Nothing was spent');
+  });
+
+  it('a local file is uploaded first, then edited by its hosted URL', async () => {
+    const photo = join(dir, 'My Photo.PNG');
+    writeFileSync(photo, 'tiny png');
+    const out = join(dir, 'local');
+    await editCommand(ctx(), photo, ['inline', 'make', 'it', '9:16'], { output: `${out}/` });
+    expect(calls.map((c) => c.name)).toEqual(['upload_asset', 'edit_media']);
+    expect(calls[1]?.args).toEqual({ assetUrl: 'https://cdn.aitopia.ai/uploaded.png', instruction: 'inline make it 9:16', mediaType: 'image' });
+    expect(readdirSync(out)).toEqual(['my-photo-edited.png']);
+  });
+
+  it('a missing local file is a usage error before connecting', async () => {
+    const error = (await editCommand(ctx(), join(dir, 'nope.png'), ['upscale'], {}).catch((e: unknown) => e)) as CliError;
+    expect(error.exitCode).toBe(2);
+    expect(calls).toEqual([]);
+  });
+
+  it('--json: stdout holds exactly one object with the plan, the files and per-step files', async () => {
+    const out = join(dir, 'json');
+    await editCommand(ctx(true), photoUrl, ['remove the background'], { output: `${out}/`, keepSteps: true });
+    const parsed = JSON.parse(stdout.text) as { status: string; files: string[]; plan: { steps: Array<{ file?: string }> }; totalCredits: number };
+    expect(parsed.status).toBe('completed');
+    expect(parsed.totalCredits).toBe(6);
+    expect(parsed.files.map((f) => f.slice(out.length + 1))).toEqual(['fox-edited.png', 'fox-edited-step-1.png', 'fox-edited-step-2.png']);
+    expect(parsed.plan.steps[0]?.file).toBe(join(out, 'fox-edited-step-1.png'));
+    expect(stdout.text).not.toContain('Plan:');
+    expect(stderr.text).not.toContain('Step 1/3');
+  }, 15_000);
+
+  it('--json --dry-run prints the estimate object only', async () => {
+    await editCommand(ctx(true), photoUrl, ['upscale'], { dryRun: true });
+    expect(JSON.parse(stdout.text)).toMatchObject({ status: 'estimate', totalCredits: 6, affordable: true });
+  });
+
+  it('--json mid-chain failure: status partial with the finished step file (via jsonStatus)', async () => {
+    const out = join(dir, 'jb');
+    const error = (await editCommand(ctx(true), photoUrl, ['break'], { output: `${out}/` }).catch((e: unknown) => e)) as CliError;
+    expect(stdout.text).toBe('');
+    expect(jsonStatus(error)).toBe('partial');
+    const plan = error.data.plan as { steps: Array<{ status: string; file?: string; error?: string }> };
+    expect(plan.steps[0]?.file).toBe(join(out, 'fox-edited-step-1.png'));
+    expect(plan.steps[1]).toMatchObject({ index: 2, status: 'failed' });
+    expect(plan.steps[2]).toMatchObject({ status: 'skipped' });
+  }, 15_000);
+
+  it('Ctrl+C after a failed chain lists the finished step as ready', async () => {
+    brokenFiles = true;
+    await editCommand(ctx(), photoUrl, ['break'], { output: join(dir, 'x') }).catch(() => undefined);
+    const context = ctx();
+    reportInterrupt(context.out);
+    expect(stderr.text).toContain(`step 1: ${base}/files/edit-step-1.png`);
+  }, 15_000);
+});
+
+describe('edit, real server shapes', () => {
+  const photoUrl = 'https://cdn.aitopia.ai/fox.png';
+
+  it('--dry-run shows each step basis, and says when the plan is over --max-credits', async () => {
+    await editCommand(ctx(), photoUrl, ['upscale'], { dryRun: true, maxCredits: 5 });
+    expect(calls[0]?.args).toMatchObject({ dryRun: true, maxCredits: 5 });
+    expect(stdout.text).toContain('     Basis: 1 image at 4K x 4 credits.');
+    expect(stdout.text).toContain('Over your --max-credits limit of 5 credits: it would not run.');
+  });
+
+  it('mid-chain partial with --keep-steps saves every finished item; step numbers come from index', async () => {
+    const out = join(dir, 'pk');
+    const error = (await editCommand(ctx(), photoUrl, ['break'], { output: `${out}/`, keepSteps: true }).catch((e: unknown) => e)) as CliError;
+    expect(error.exitCode).toBe(1);
+    expect(readdirSync(out)).toEqual(['fox-edited-step-1.png']);
+    expect(stdout.text).toContain('  3. Resize (ffmpeg) · 0 credits · skipped');
+  }, 15_000);
+
+  it('a partial for lack of credits exits 4 with the buy link, and still saves the finished step', async () => {
+    const out = join(dir, 'pc');
+    const error = (await editCommand(ctx(), photoUrl, ['break credits'], { output: `${out}/` }).catch((e: unknown) => e)) as CliError;
+    expect(error.exitCode).toBe(4);
+    expect(error.code).toBe('INSUFFICIENT_CREDITS');
+    expect(error.notes).toContain('Buy credits: https://aitopia.ai/pricing');
+    expect(readdirSync(out)).toEqual(['fox-edited-step-1.png']);
+  }, 15_000);
+
+  it('PLAN_INVALID, NOT_SUPPORTED and SERVER_RESTARTING get CLI hints (nothing ran)', () => {
+    for (const code of ['PLAN_INVALID', 'NOT_SUPPORTED', 'SERVER_RESTARTING']) {
+      const error = failureToError({ status: 'failed', code, error: 'x', retryable: code !== 'NOT_SUPPORTED' });
+      expect(error.exitCode).toBe(1);
+      expect(error.hint).toContain('Nothing ran');
+    }
+  });
+});
+
+describe('edit, server update (POLL_FAILED, PRICE_UNKNOWN, estimated and unchanged steps)', () => {
+  const photoUrl = 'https://cdn.aitopia.ai/fox.png';
+
+  it('POLL_FAILED from get_run_status is outcome unknown: exit 5, check AITOPIA before running again', async () => {
+    const error = (await editCommand(ctx(), photoUrl, ['poll fails'], {}).catch((e: unknown) => e)) as CliError;
+    expect(error.exitCode).toBe(5);
+    expect(error.code).toBe('POLL_FAILED');
+    expect(error.hint).toContain('Check Open in AITOPIA before running it again');
+    expect(error.notes).toContain('Check it with: aitopia status edit-poll --wait');
+    expect(jsonStatus(error)).toBe('unknown');
+  }, 15_000);
+
+  it('a partial with POLL_FAILED still saves the finished step, then exits 5', async () => {
+    const out = join(dir, 'pp');
+    const error = (await editCommand(ctx(), photoUrl, ['poll partial'], { output: `${out}/` }).catch((e: unknown) => e)) as CliError;
+    expect(error.exitCode).toBe(5);
+    expect(error.message).toContain('Step 2 (Topaz Image Upscale) could not be checked');
+    expect(readdirSync(out)).toEqual(['fox-edited-step-1.png']);
+  });
+
+  it('PRICE_UNKNOWN without --max-credits: exit 1, the plan is shown, nothing ran', async () => {
+    const error = (await editCommand(ctx(), photoUrl, ['unknown price'], {}).catch((e: unknown) => e)) as CliError;
+    expect(error.exitCode).toBe(1);
+    expect(error.code).toBe('PRICE_UNKNOWN');
+    expect(error.hint).toContain('Nothing ran or was charged');
+    expect(stdout.text).toContain('  2. Topaz Image Upscale (model)\n');
+    expect(stdout.text.match(/Plan:/g)).toHaveLength(1);
+    expect(calls.map((c) => c.name)).toEqual(['edit_media']);
+  });
+
+  it('PLAN_UNAVAILABLE when the rate store is down: nothing spent, try again later', async () => {
+    const error = (await editCommand(ctx(), photoUrl, ['rate store down'], {}).catch((e: unknown) => e)) as CliError;
+    expect(error.exitCode).toBe(1);
+    expect(error.hint).toBe('AITOPIA could not plan this edit right now. Nothing was spent; try again later.');
+  });
+
+  it('--dry-run marks a listed price as approximate', async () => {
+    await editCommand(ctx(), photoUrl, ['estimated'], { dryRun: true });
+    expect(stdout.text).toContain('  2. Topaz Image Upscale (model) · ~4 credits (listed price)');
+  });
+
+  it('an unchanged step and noTransformNeeded say so, and the file is still saved', async () => {
+    const out = join(dir, 'same');
+    await editCommand(ctx(), photoUrl, ['already 9:16'], { output: `${out}/` });
+    expect(stdout.text).toContain('  1. Resize (ffmpeg) · no change needed, 0 credits');
+    expect(stdout.text).toContain('The file was already in the requested form; nothing needed changing.');
+    expect(readdirSync(out)).toEqual(['fox-edited.png']);
+  });
 });

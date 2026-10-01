@@ -11,6 +11,7 @@ import { VERSION } from './version.js';
 import { audioCommand } from './commands/audio.js';
 import { batchCommand } from './commands/batch.js';
 import { creditsCommand } from './commands/credits.js';
+import { editCommand } from './commands/edit.js';
 import { imageCommand } from './commands/image.js';
 import { loginCommand } from './commands/login.js';
 import { logoutCommand } from './commands/logout.js';
@@ -48,6 +49,7 @@ Examples:
   $ aitopia image "minimal logo of a paper boat" -n 3 -o logos/
   $ aitopia video "the fox turns its head and blinks" --image fox.png
   $ aitopia audio "Welcome to AITOPIA." -o welcome.mp3
+  $ aitopia edit photo.jpg "remove the background, upscale it, make it 9:16"
   $ aitopia video "slow pan over a harbor" --duration 10 --dry-run
   $ aitopia batch shots.json -o shots/
   $ aitopia status <runToken> <runToken> --wait
@@ -149,6 +151,31 @@ export function buildProgram(): Command {
       .option('--set <key=value>', 'extra model field, e.g. voice (repeatable, value parsed as JSON)', collect)
       .option('--dry-run', DRY_RUN_HELP),
   ).action(action((g, words, opts) => audioCommand(createContext(g), words as string[], opts as Parameters<typeof audioCommand>[2])));
+
+  addDeliveryOptions(
+    program
+      .command('edit')
+      .description('edit an image, video or audio file in plain words (AITOPIA plans and runs the steps)')
+      .argument('<file|url>', 'the file to edit (a local file is uploaded first) or its https URL')
+      .argument('<instruction...>', 'what to change, e.g. "remove the background, upscale to 4K"')
+      .option('--dry-run', 'show the plan, the price of each step and your balance; nothing runs or is charged (a local file is still uploaded, which is free)')
+      .option('--max-credits <n>', 'do not run if the plan costs more than this', parseIntegerOption('--max-credits', 1, 1_000_000))
+      .option('--keep-steps', 'also save the file of every step, as <name>-step-N.<ext>')
+      .option('--plan <token>', 'run exactly the plan a --dry-run priced (same file and words, within 1 hour)')
+      .addHelpText(
+        'after',
+        `
+AITOPIA picks each step from its models, store agents and editing tools, runs them
+in order and feeds each result into the next. The plan is shown first, then each step.
+The result is saved as <file name>-edited.<ext> (or at -o).
+--dry-run prints the plan and a command with --plan that runs exactly that plan at
+that price; without --plan the edit is planned again and may come out differently.
+If a step fails, the steps before it are kept: the last finished file is saved
+(every finished one with --keep-steps) and the command exits 1.
+Exit: 0 done (also --dry-run when your balance is short; it says so), 1 failed or
+over --max-credits (the plan and total are shown, nothing ran), 5 outcome unknown.`,
+      ),
+  ).action(action((g, file, words, opts) => editCommand(createContext(g), file as string, words as string[], opts as Parameters<typeof editCommand>[3])));
 
   program
     .command('upload')

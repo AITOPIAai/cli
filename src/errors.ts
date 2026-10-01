@@ -184,10 +184,15 @@ const CODE_HINTS: Record<string, string> = {
   BATCH_UNAVAILABLE: NOTHING_CHARGED_HINT,
   MODEL_CHECK_UNAVAILABLE: NOTHING_CHARGED_HINT,
   PRICE_UNKNOWN: 'Run it without --dry-run only if you accept an unknown price.',
+  PLAN_UNAVAILABLE: 'AITOPIA could not plan this edit right now. Nothing was spent; try again later.',
+  PLAN_INVALID: 'AITOPIA could not make a workable plan for this. Nothing ran; it is safe to try again, perhaps worded differently.',
+  NOT_SUPPORTED: 'AITOPIA cannot make this change to this kind of file yet. Nothing ran or was charged.',
+  PLAN_EXPIRED: 'Nothing ran or was charged. Run aitopia edit --dry-run again for a new plan.',
+  SERVER_RESTARTING: 'AITOPIA is restarting. Nothing ran; it is safe to try again in a minute.',
 };
 
 /** Codes after which running the same thing again is safe (nothing was charged). */
-export const NOT_CHARGED_RETRY_CODES = new Set(['SLOT_TIMEOUT', 'BATCH_UNAVAILABLE', 'MODEL_CHECK_UNAVAILABLE']);
+export const NOT_CHARGED_RETRY_CODES = new Set(['SLOT_TIMEOUT', 'BATCH_UNAVAILABLE', 'MODEL_CHECK_UNAVAILABLE', 'PLAN_UNAVAILABLE', 'PLAN_INVALID', 'SERVER_RESTARTING']);
 
 /** A single-token get_run_status answers an invalid / foreign / expired token as NOT_FOUND with this text. */
 function isRunTokenNotFound(code: string, message: string): boolean {

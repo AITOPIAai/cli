@@ -106,8 +106,8 @@ url=$(aitopia image "app icon, flat, blue" --no-download --json | jq -r '.assetU
 echo "$url"
 ```
 
-Check the price first. `--dry-run` works on `image`, `video`, `audio`, `batch`
-and `run` (for tools that offer a price check). Nothing is submitted or charged:
+Check the price first. `--dry-run` works on `image`, `video`, `audio`, `edit`,
+`batch` and `run` (for tools that offer a price check). Nothing is submitted or charged:
 
 ```sh
 aitopia video "slow pan over a harbor at dawn" --duration 10 --dry-run
@@ -122,6 +122,37 @@ A dry run exits 0 also when your balance does not cover the price; it then says
 `Affordable: no, not enough credits` and prints the link to buy credits (with
 `--json`, check `affordable`). A model without a listed price fails with
 `PRICE_UNKNOWN` (exit 1). `video --dry-run` does not upload a local `--image`.
+
+Edit a file you already have, in plain words. AITOPIA plans the steps (models,
+store agents and editing tools), shows the plan and runs it; each step's result
+feeds the next:
+
+```sh
+aitopia edit fox.jpg "remove the background, upscale to 4K, make it a 9:16 story"
+# Plan: Remove the background, upscale to 4K, then pad to 9:16.   (example output)
+#   1. Bria Remove Background (model) · 2 credits
+#      Cuts the subject out cleanly.
+#   2. Topaz Image Upscale (model) · 4 credits
+#      Sharpens it to 4K.
+#   3. Resize (ffmpeg) · 0 credits
+#      Pads it to 9:16 for a story.
+# Step 2/3 · Upscaling with Topaz Image Upscale
+# Saved fox-edited.png
+# Total: 6 credits
+# Open in AITOPIA: https://aitopia.ai/...
+```
+
+A local file is uploaded first; an https URL is used as is. `--dry-run` shows
+the plan with each step's price and your balance (nothing runs), plus a command
+with `--plan <token>` that runs exactly that plan, never above that price, once
+within an hour (without `--plan` the edit is planned again and can differ). `--max-credits N`
+refuses a plan that costs more (`OVER_BUDGET`, exit 1, the plan and total are
+shown, nothing ran). `--keep-steps` also saves every intermediate file as
+`fox-edited-step-1.png`, `fox-edited-step-2.png`, ... If a step fails, the
+chain stops there: the last finished file is saved (all of them with
+`--keep-steps`), the error names the failed step and the command exits 1
+(4 when it ran out of credits; with `--json` the status is `"partial"`). Finished steps are
+paid for and stay in AITOPIA, so do not run them again.
 
 Make several things at once (up to 12, any mix of models and media) from a
 JSON file:
@@ -191,6 +222,7 @@ lists the closest current models (`Did you mean: ...`).
 | `aitopia image <prompt> [--model id] [--aspect r] [-n 1-4] [--set k=v] [--dry-run]` | Generate images |
 | `aitopia video <prompt> [--model id] [--image file\|url] [--duration s] [--aspect r] [--set k=v] [--dry-run]` | Generate a video |
 | `aitopia audio <text> [--model id] [--set k=v] [--dry-run]` | Generate speech, music or sound |
+| `aitopia edit <file\|url> <instruction> [--dry-run] [--plan token] [--max-credits n] [--keep-steps]` | Edit a file in plain words (planned steps, shown first) |
 | `aitopia batch <file> [--dry-run] [--wait \| --no-wait]` | Make up to 12 images, videos and audio clips from a JSON file |
 | `aitopia upload <file\|url...>` | Upload files, print their URLs |
 | `aitopia run <tool> [--json-args '{...}' \| --args-file f] [--set k=v] [--dry-run]` | Call any tool |

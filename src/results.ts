@@ -105,7 +105,7 @@ export function isEstimate(outcome: ToolOutcome): boolean {
   return !outcome.isError && (outcome.payload.status === 'estimate' || outcome.payload.status === 'dry_run');
 }
 
-function creditsText(value: unknown): string {
+export function creditsText(value: unknown): string {
   if (typeof value === 'string' && value.toLowerCase() === 'unlimited') return 'unlimited';
   const n = num(value);
   return n === undefined ? 'unknown' : `${formatNumber(n)} credit${n === 1 ? '' : 's'}`;

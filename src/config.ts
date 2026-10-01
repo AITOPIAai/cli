@@ -4,7 +4,7 @@ import { UsageError } from './errors.js';
 
 export const DEFAULT_SERVER_URL = 'https://mcp.aitopia.ai/mcp';
 
-type Env = Record<string, string | undefined>;
+export type Env = Record<string, string | undefined>;
 
 /** Server URL from --server, then AITOPIA_MCP_URL, then the default. Returned normalized. */
 export function resolveServerUrl(flag: string | undefined, env: Env = process.env): string {

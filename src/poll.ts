@@ -72,6 +72,8 @@ export interface WaitOptions {
   /** Called once with the runToken when waiting starts. */
   onStart?: (runToken: string) => void;
   onProgress?: (progress: RunProgress) => void;
+  /** Every answer while the run is still going (the first one too), e.g. to follow a step plan. */
+  onUpdate?: (payload: Record<string, unknown>) => void;
   /** Live progress notifications of each status call. */
   callOptions?: CallOptions;
   /** Server notes about the call itself (e.g. waitNote: it checked once without waiting). */
@@ -127,6 +129,7 @@ export async function waitForRun(call: ToolCaller, first: ToolOutcome, options: 
   }
 
   options.onStart?.(runToken);
+  options.onUpdate?.(first.payload);
   options.onProgress?.(progressOf(runToken, first));
   let interval = pollInterval(first.payload.pollAfterMs);
   let delay = 0;
@@ -171,6 +174,7 @@ export async function waitForRun(call: ToolCaller, first: ToolOutcome, options: 
       return { ...next, payload: { runToken, ...next.payload } };
     }
     if (typeof next.payload.waitNote === 'string') options.onNote?.(next.payload.waitNote);
+    options.onUpdate?.(next.payload);
     options.onProgress?.(progressOf(runToken, next));
     interval = pollInterval(next.payload.pollAfterMs ?? interval);
     delay = nextDelay(interval, now() - started);
