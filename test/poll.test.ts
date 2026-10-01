@@ -149,6 +149,33 @@ describe('waitForRun', () => {
   });
 });
 
+describe('waitForRun for create_voice (voiceId, no runToken)', () => {
+  it('finishes the clone by calling create_voice again with the voiceId, never get_run_status', async () => {
+    const call = vi
+      .fn()
+      .mockResolvedValueOnce(outcome({ status: 'running', voiceId: 'v1' }))
+      .mockResolvedValueOnce(outcome({ status: 'completed', voiceId: 'v1', state: 'ready' }));
+    const sleep = vi.fn(async () => {});
+    const done = await waitForRun(call, outcome({ status: 'running', voiceId: 'v1', note: 'still cloning' }), { sleep });
+    expect(done.payload).toMatchObject({ status: 'completed', state: 'ready' });
+    expect(call.mock.calls.map((c) => [c[0], c[1]])).toEqual([
+      ['create_voice', { voiceId: 'v1', consent: true }],
+      ['create_voice', { voiceId: 'v1', consent: true }],
+    ]);
+  });
+
+  it('gives up after 5 minutes with the resume command (exit 5), not charged again', async () => {
+    let t = 0;
+    const call = vi.fn(async () => outcome({ status: 'running', voiceId: 'v1' }));
+    const error = await waitForRun(call, outcome({ status: 'running', voiceId: 'v1' }), {
+      sleep: async (ms: number) => void (t += ms),
+      now: () => t,
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OutcomeUnknownError);
+    expect(String((error as Error).message)).toContain('"voiceId":"v1"');
+  });
+});
+
 describe('isTransientPollFailure', () => {
   it('retries only status-call trouble: RATE_LIMIT, and UPSTREAM_5XX whose hint names get_run_status', () => {
     const pollHint = { hint: 'The run is not affected; call get_run_status again with the same runToken in a few seconds.' };

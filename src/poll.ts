@@ -120,6 +120,9 @@ export async function waitForRun(call: ToolCaller, first: ToolOutcome, options: 
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? Date.now;
   const runToken = first.payload.runToken;
+  if ((typeof runToken !== 'string' || !runToken) && typeof first.payload.voiceId === 'string' && first.payload.voiceId) {
+    return waitForVoice(call, first, first.payload.voiceId, options);
+  }
   if (typeof runToken !== 'string' || !runToken) {
     const note =
       typeof first.payload.note === 'string' && first.payload.note
@@ -294,4 +297,32 @@ export async function waitForRuns(call: ToolCaller, tokens: string[], options: M
     delay = nextDelay(interval, now() - started);
   }
   return ends;
+}
+
+const VOICE_POLL_MS = 15_000;
+const VOICE_MAX_MS = 5 * 60_000;
+
+/**
+ * create_voice answers "running" with our voiceId instead of a runToken: the
+ * clone is finished by calling create_voice again with that voiceId, which the
+ * server never charges twice (the pending voice already holds the job).
+ */
+async function waitForVoice(call: ToolCaller, first: ToolOutcome, voiceId: string, options: WaitOptions): Promise<ToolOutcome> {
+  const sleep = options.sleep ?? defaultSleep;
+  const now = options.now ?? Date.now;
+  const deadline = now() + VOICE_MAX_MS;
+  options.onUpdate?.(first.payload);
+  let last = first;
+  while (isRunning(last)) {
+    if (now() >= deadline) {
+      throw new OutcomeUnknownError(
+        `The voice is still being created. Finish it later with: aitopia run create_voice --json-args '{"voiceId":"${voiceId}","consent":true}' (not charged again).`,
+        { code: 'OUTCOME_UNKNOWN', data: { voiceId } },
+      );
+    }
+    await sleep(VOICE_POLL_MS);
+    last = await call('create_voice', { voiceId, consent: true }, options.callOptions);
+    options.onUpdate?.(last.payload);
+  }
+  return last;
 }
