@@ -106,7 +106,7 @@ url=$(aitopia image "app icon, flat, blue" --no-download --json | jq -r '.assetU
 echo "$url"
 ```
 
-Check the price first. `--dry-run` works on `image`, `video`, `audio`, `edit`,
+Check the price first. `--dry-run` works on `image`, `video`, `audio`, `edit`, `transcribe`, `voices create`,
 `batch` and `run` (for tools that offer a price check). Nothing is submitted or charged:
 
 ```sh
@@ -188,6 +188,74 @@ and the command exits 1 naming what failed (items refused with `SLOT_TIMEOUT`,
 simply be run again). `--no-wait` returns after the first answer and exits 5
 with the run tokens of the items still going.
 
+Keep your files in projects. `--project` (and `--folder`) on `image`, `video`,
+`audio`, `edit` and `batch` saves new results there; a project or folder is named
+by its name (any case) or its id, and is checked before anything is spent:
+
+```sh
+aitopia projects                                   # name, files, id, link
+aitopia projects create "Spring campaign"
+aitopia projects folder "Spring campaign" Banners
+aitopia image "spring sale banner" --project "Spring campaign" --folder Banners
+aitopia projects show "Spring campaign" --type image
+aitopia projects move https://cdn.aitopia.ai/.../fox.png --to "Spring campaign"
+aitopia projects move https://cdn.aitopia.ai/.../fox.png --out
+aitopia projects rename "Spring campaign" "Spring 2027"
+aitopia projects delete "Spring 2027"              # asks first; --yes in scripts
+```
+
+Projects are free. Deleting a project removes it and its folders only: every
+file stays in your AITOPIA Creations. `delete` asks first (answering no exits 1,
+"Not deleted"; without a terminal, add `--yes`). `move` reports files it could
+not find (exit 1; the others are moved). A name with the exact same case wins;
+otherwise the name is matched ignoring case, and when that fits several
+projects (say `Dup` and `dup`, asked for as `DUP`) it is ambiguous: use the id.
+
+Clone your own voice once, then speak any text in it:
+
+```sh
+aitopia voices create "My voice" me.m4a --consent --dry-run   # price and balance
+aitopia voices create "My voice" me.m4a --consent
+# Ready: the voice "My voice" (60307754-...)    (example output)
+# Saved my-voice-preview.mp3
+aitopia audio "Thanks for watching, see you next week." --voice "My voice"
+aitopia voices                                  # name, state, created, last used
+aitopia voices delete "My voice"
+```
+
+`--consent` is required: it confirms the recording is your own voice, or that
+the speaker gave you permission to clone it. Never clone anyone else. A clone
+costs 150 credits; the sample is an audio file or a video with sound, 10 s to
+5 min (best 30-60 s, one speaker, no music), and a local file is uploaded first.
+Use a new voice for speech within about 7 days, or the voice provider may remove
+it (`aitopia voices` then says "may have expired", and speaking fails with
+`VOICE_EXPIRED`): `aitopia voices create "My voice" --consent` without a sample
+re-creates it from the stored sample (150 credits again, always shown) or
+finishes one that is still being created (not charged again). Re-creating a
+voice that is ready and not flagged as expired asks first (`--yes` in scripts).
+
+Turn speech into subtitles or text (1 credit; a video costs 1 more because its
+sound is extracted first):
+
+```sh
+aitopia transcribe interview.mp3                 # saves interview.srt
+aitopia transcribe talk.mp4 -o subs/             # subs/talk.srt
+aitopia transcribe memo.m4a --format txt         # prints the text
+aitopia transcribe podcast.mp3 --language sw -o podcast.json
+```
+
+It runs `xai/grok-speech-to-text` with word timings and builds the subtitles
+locally: lines of at most 42 characters, two lines and about 3.5 s per cue,
+split at sentence ends and pauses (`--words`: one cue per word; Japanese,
+Chinese and Thai are joined without spaces). A `--language` outside Grok's 25
+runs `openai/whisper` instead (100+ languages, coarser timing; long segments are
+split into several cues); `pt-BR` counts as `pt`. A URL whose name does not
+tell audio from video is checked first with the free `probe_media`. The output
+path is checked before anything is spent; if saving still fails, the transcript
+is printed so it is not lost. The format comes
+from `--format` or the `-o` extension (`.srt`, `.txt`, `.json` with the word
+timings); `-o -` writes to stdout.
+
 Long runs (most videos) show a progress line with the server's own status and
 an estimate of the time left when one is known. Press Ctrl+C to stop waiting:
 finished results are listed (saved files, or their URLs if not downloaded yet),
@@ -221,13 +289,27 @@ lists the closest current models (`Did you mean: ...`).
 | `aitopia model <id>` | Show a model's input fields |
 | `aitopia image <prompt> [--model id] [--aspect r] [-n 1-4] [--set k=v] [--dry-run]` | Generate images |
 | `aitopia video <prompt> [--model id] [--image file\|url] [--duration s] [--aspect r] [--set k=v] [--dry-run]` | Generate a video |
-| `aitopia audio <text> [--model id] [--set k=v] [--dry-run]` | Generate speech, music or sound |
+| `aitopia audio <text> [--model id \| --voice name] [--set k=v] [--dry-run]` | Generate speech, music or sound (`--voice`: in one of your cloned voices) |
 | `aitopia edit <file\|url> <instruction> [--dry-run] [--plan token] [--max-credits n] [--keep-steps]` | Edit a file in plain words (planned steps, shown first) |
 | `aitopia batch <file> [--dry-run] [--wait \| --no-wait]` | Make up to 12 images, videos and audio clips from a JSON file |
+| `aitopia transcribe <file\|url> [--language code] [--format srt\|txt\|json] [--words] [--dry-run]` | Speech to subtitles or text |
+| `aitopia projects [list] [--limit n] [--offset n]` | List your projects |
+| `aitopia projects create <name> [--description text]` | Make a project |
+| `aitopia projects show <project> [--folder f] [--type image\|video\|audio\|file]` | List a project's folders and files |
+| `aitopia projects folder <project> <name> [--parent folder]` | Make a folder |
+| `aitopia projects move <asset...> (--to project [--folder f] \| --out)` | Move files (URLs or ids) into a project, or out of it |
+| `aitopia projects rename <project> <newName>` | Rename a project |
+| `aitopia projects delete <project> [--yes]` | Delete a project (its files stay in Creations) |
+| `aitopia voices [list]` | List your cloned voices |
+| `aitopia voices create <name> [sample] --consent [--language l] [--dry-run]` | Clone a voice (150 credits), or re-create / finish one of yours |
+| `aitopia voices delete <voice> [--yes] [--force]` | Delete a voice |
 | `aitopia upload <file\|url...>` | Upload files, print their URLs |
 | `aitopia run <tool> [--json-args '{...}' \| --args-file f] [--set k=v] [--dry-run]` | Call any tool |
 | `aitopia tools [--q text]` | List the tools available to you |
 | `aitopia status <runToken...> [--wait]` | Check or wait for long runs (up to 12 tokens) |
+
+`image`, `video`, `audio`, `edit` and `batch` also take `--project <name|id>`
+and `--folder <name|id>` (save the result there).
 
 Commands that produce files also take:
 

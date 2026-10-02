@@ -9,11 +9,12 @@ import type { Session } from '../mcp.js';
 import { describeProgress, progressMessage } from '../output.js';
 import { isRunning, waitForRun } from '../poll.js';
 import { allowHttpLoopback, creditsText, startActivity, type Activity, type DeliverOptions } from '../results.js';
+import { checkScopeOptions, resolveScope, type ScopeOptions } from '../resolve.js';
 import { assertLocalFile, contentTypeFor, isRemoteUrl, uploadSource } from '../upload.js';
 import { paidCall } from './generate.js';
 import { fileStamp, keepPlan, keptPlan, sourceKey } from '../edit-plans.js';
 
-export interface EditOptions extends DeliverOptions {
+export interface EditOptions extends DeliverOptions, ScopeOptions {
   dryRun?: boolean;
   maxCredits?: number;
   keepSteps?: boolean;
@@ -225,6 +226,7 @@ export async function editCommand(ctx: Context, source: string, words: string[],
   if (!instruction) throw new UsageError('Say what to change, e.g. aitopia edit photo.jpg "remove the background, make it 9:16".');
   const remote = isRemoteUrl(source);
   if (!remote) assertLocalFile(source);
+  checkScopeOptions(options);
   const { out } = ctx;
   const name = `${sourceStem(source) || slugify(instruction) || 'aitopia'}-edited`;
   if (options.plan && options.dryRun) throw new UsageError('--plan runs a plan that was already priced; leave out --dry-run.');
@@ -241,12 +243,14 @@ export async function editCommand(ctx: Context, source: string, words: string[],
   }
 
   await withSession(ctx, async (session) => {
+    // Before the upload and the paid call: a project that does not exist stops here.
+    const scope = await resolveScope(ctx, session, options);
     let assetUrl = kept?.assetUrl ?? source;
     if (!remote && !kept) {
       if (!out.jsonMode) out.note(`Uploading ${source}...`);
       assetUrl = (await uploadSource(session.callTool, source, { allowHttpLoopback: allowHttpLoopback(ctx.serverUrl) })).assetUrl;
     }
-    const args: Record<string, unknown> = { assetUrl, instruction };
+    const args: Record<string, unknown> = { assetUrl, instruction, ...scope };
     if (options.plan) args.planToken = options.plan;
     const mediaType = mediaTypeOf(source);
     if (mediaType) args.mediaType = mediaType;

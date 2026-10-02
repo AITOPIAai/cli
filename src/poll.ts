@@ -311,6 +311,7 @@ async function waitForVoice(call: ToolCaller, first: ToolOutcome, voiceId: strin
   const sleep = options.sleep ?? defaultSleep;
   const now = options.now ?? Date.now;
   const deadline = now() + VOICE_MAX_MS;
+  const interval = typeof first.payload.pollAfterMs === 'number' ? pollInterval(first.payload.pollAfterMs) : VOICE_POLL_MS;
   options.onUpdate?.(first.payload);
   let last = first;
   while (isRunning(last)) {
@@ -320,7 +321,8 @@ async function waitForVoice(call: ToolCaller, first: ToolOutcome, voiceId: strin
         { code: 'OUTCOME_UNKNOWN', data: { voiceId } },
       );
     }
-    await sleep(VOICE_POLL_MS);
+    // Never sleep past the deadline: one last check, then report.
+    await sleep(Math.max(0, Math.min(interval, deadline - now())));
     last = await call('create_voice', { voiceId, consent: true }, options.callOptions);
     options.onUpdate?.(last.payload);
   }

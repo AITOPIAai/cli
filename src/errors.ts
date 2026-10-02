@@ -189,6 +189,25 @@ const CODE_HINTS: Record<string, string> = {
   NOT_SUPPORTED: 'AITOPIA cannot make this change to this kind of file yet. Nothing ran or was charged.',
   PLAN_EXPIRED: 'Nothing ran or was charged. Run aitopia edit --dry-run again for a new plan.',
   SERVER_RESTARTING: 'AITOPIA is restarting. Nothing ran; it is safe to try again in a minute.',
+  MODEL_DISABLED: 'This model is switched off right now. Pick another one with `aitopia models`. Nothing was spent.',
+  // Voices
+  VOICE_EXPIRED:
+    'The voice provider removed this voice. Re-create it from its stored sample with `aitopia voices create <name> --consent` (it costs 150 credits; add --dry-run to see the price first), then speak again.',
+  VOICE_BEING_CREATED:
+    'This voice is already being created; nothing new was started or charged. Finish it with `aitopia voices create <name> --consent` (not charged again), or check `aitopia voices`.',
+  VOICE_PENDING: 'This voice is still being created. Finish it with `aitopia voices create <name> --consent` (not charged again), then speak.',
+  VOICE_STILL_CLONING: 'The voice is still being created. Delete it anyway with --force (that clone result is lost), or wait and check `aitopia voices`.',
+  VOICE_NAME_TAKEN: 'You already have a voice with this name. Pick another name, or delete the old one with `aitopia voices delete <name>`. Nothing was charged.',
+  VOICE_NOT_FOUND: 'See your voices with `aitopia voices`. Nothing was spent.',
+  SAMPLE_NOT_OWNED:
+    'The sample must be a file you uploaded to AITOPIA yourself: pass a local file (the CLI uploads it) or a URL printed by `aitopia upload`. Nothing was charged.',
+  USE_CREATE_VOICE: 'Voices are cloned only with `aitopia voices create <name> <sample> --consent`. Nothing was run or charged.',
+  VOICES_UNAVAILABLE: 'Voices are not available right now. Nothing was charged; try again later.',
+  // Projects
+  PROJECT_NOT_FOUND: 'See your projects with `aitopia projects`. Nothing was spent.',
+  FOLDER_NOT_FOUND: 'See the folders of a project with `aitopia projects show <project>`. Nothing was spent.',
+  PROJECTS_UNAVAILABLE: 'Projects are not available right now. Results are still saved in your AITOPIA Creations; try again later.',
+  NAME_CONFLICT: 'That name is already taken here. Pick another name.',
 };
 
 /** Codes after which running the same thing again is safe (nothing was charged). */

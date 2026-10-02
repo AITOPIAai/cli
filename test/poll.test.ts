@@ -174,6 +174,27 @@ describe('waitForRun for create_voice (voiceId, no runToken)', () => {
     expect(error).toBeInstanceOf(OutcomeUnknownError);
     expect(String((error as Error).message)).toContain('"voiceId":"v1"');
   });
+
+  it('never sleeps past the 5-minute deadline', async () => {
+    let t = 0;
+    const sleeps: number[] = [];
+    // Each check takes 7 s, so the 15 s rhythm does not land on the deadline.
+    const call = vi.fn(async () => {
+      t += 7000;
+      return outcome({ status: 'running', voiceId: 'v1' });
+    });
+    const error = await waitForRun(call, outcome({ status: 'running', voiceId: 'v1' }), {
+      sleep: async (ms: number) => {
+        sleeps.push(ms);
+        t += ms;
+      },
+      now: () => t,
+    }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OutcomeUnknownError);
+    expect(sleeps.at(-1)).toBeLessThan(15_000);
+    // The last sleep ends at the deadline; only the final check runs past it.
+    expect(t - 7000).toBeLessThanOrEqual(5 * 60_000);
+  });
 });
 
 describe('isTransientPollFailure', () => {

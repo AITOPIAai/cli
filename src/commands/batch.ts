@@ -8,6 +8,7 @@ import type { Session } from '../mcp.js';
 import { MAX_RUN_TOKENS } from '../poll.js';
 import { allowHttpLoopback, deliverEstimate, startActivity, type DeliverOptions } from '../results.js';
 import { directoryTarget, finishItems, followItems, settleItem, type ItemDelivery, type RunItem } from '../runs.js';
+import { checkScopeOptions, resolveScope, type ScopeOptions } from '../resolve.js';
 import { assertLocalFile, uploadSource } from '../upload.js';
 import { spendableCredits } from './credits.js';
 
@@ -23,7 +24,7 @@ export interface BatchItem {
   allowAnyModel?: boolean;
 }
 
-export interface BatchOptions extends DeliverOptions {
+export interface BatchOptions extends DeliverOptions, ScopeOptions {
   dryRun?: boolean;
   /** false with --no-wait: return after the first answer. */
   wait?: boolean;
@@ -186,10 +187,13 @@ export async function batchCommand(ctx: Context, file: string, options: BatchOpt
   const untilDone = options.wait !== false;
   const target = directoryTarget(options.output);
   checkLocalFiles(parsed, baseDir);
+  checkScopeOptions(options);
 
   await withSession(ctx, async (session) => {
+    // Before the uploads and the paid call: a project that does not exist stops here.
+    const scope = await resolveScope(ctx, session, options);
     const items = await uploadLocalFiles(ctx, session, parsed, baseDir, options.dryRun === true);
-    const args: Record<string, unknown> = { items, wait: untilDone ? BATCH_WAIT_SEC : 0 };
+    const args: Record<string, unknown> = { items, wait: untilDone ? BATCH_WAIT_SEC : 0, ...scope };
 
     if (options.dryRun) {
       args.dryRun = true;

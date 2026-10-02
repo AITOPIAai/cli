@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
@@ -23,6 +23,18 @@ import { batchCommand } from '../src/commands/batch.js';
 import { runCommand } from '../src/commands/run.js';
 import { statusCommand } from '../src/commands/status.js';
 import { editCommand } from '../src/commands/edit.js';
+import { audioCommand } from '../src/commands/audio.js';
+import {
+  projectsCreateCommand,
+  projectsDeleteCommand,
+  projectsListCommand,
+  projectsMoveCommand,
+  projectsShowCommand,
+} from '../src/commands/projects.js';
+import { voicesCreateCommand, voicesDeleteCommand, voicesListCommand } from '../src/commands/voices.js';
+import { transcribeCommand } from '../src/commands/transcribe.js';
+import { matchNamed } from '../src/resolve.js';
+import { buildSrt, cuesFromWords, cuesOf, normalizeLanguage, splitSegment, sttModelFor, wrapCue } from '../src/transcript.js';
 
 // A local stand-in for the AITOPIA MCP server (no internet involved). Shapes
 // follow scotty's src/mcp: media-tool-executor.ts (generate_image,
@@ -318,7 +330,137 @@ function editMedia(args: Record<string, unknown>) {
   return ok({ status: 'running', tool: 'edit_media', runToken, pollAfterMs: 2000 });
 }
 
+// Projects (scotty src/mcp/project-tool-executor.ts), voices (voice-tools.ts,
+// lib/voices/service.ts), audio_tools and the speech-to-text models run with
+// run_model. list_projects pages by 3 here so that name lookups must page.
+type FakeProject = { id: string; name: string; assetCount: number; folders: Array<{ id: string; name: string; parentFolderId: string | null }> };
+let projectsDb: FakeProject[] = [];
+let voicesDb: Array<Record<string, unknown>> = [];
+const GROK_WORDS = [
+  { text: 'Hello', start: 0.1, end: 0.4 },
+  { text: 'there.', start: 0.45, end: 0.8 },
+  { text: 'This', start: 1.0, end: 1.2 },
+  { text: 'is', start: 1.25, end: 1.35 },
+  { text: 'a', start: 1.4, end: 1.45 },
+  { text: 'test', start: 1.5, end: 1.8 },
+  // a pause of more than 0.6 s starts a new cue
+  { text: 'after', start: 2.6, end: 2.9 },
+  { text: 'a', start: 2.95, end: 3.0 },
+  { text: 'pause', start: 3.05, end: 3.5 },
+];
+const WHISPER_SRT = '1\n00:00:00,000 --> 00:00:02,000\nHabari ya asubuhi.\n\n2\n00:00:02,000 --> 00:00:05,000\nKaribu sana.\n';
+
+function newTools(name: string, args: Record<string, unknown>) {
+  const project = () => projectsDb.find((p) => p.id === args.projectId);
+  switch (name) {
+    case 'list_projects': {
+      const offset = typeof args.offset === 'number' ? args.offset : 0;
+      const size = Math.min(typeof args.limit === 'number' ? args.limit : 30, 3);
+      const page = projectsDb.slice(offset, offset + size);
+      return ok({
+        status: 'completed',
+        projects: page.map((p) => ({ id: p.id, name: p.name, description: null, assetCount: p.assetCount, openInAitopia: `https://aitopia.ai/creations?project=${p.id}` })),
+        total: projectsDb.length,
+        ...(offset + page.length < projectsDb.length ? { nextOffset: offset + page.length } : {}),
+        openInAitopia: 'https://aitopia.ai/creations',
+      });
+    }
+    case 'create_project': {
+      if (projectsDb.some((p) => p.name === args.name)) return fail({ code: 'NAME_CONFLICT', error: `A project named "${String(args.name)}" already exists.`, retryable: false });
+      const created = { id: 'p-new', name: String(args.name), assetCount: 0, folders: [] };
+      projectsDb.push(created);
+      return ok({ status: 'completed', project: { id: created.id, name: created.name, assetCount: 0 }, openInAitopia: 'https://aitopia.ai/creations?project=p-new' });
+    }
+    case 'list_project_assets': {
+      const p = project();
+      if (!p) return fail({ code: 'PROJECT_NOT_FOUND', error: 'Project not found. Use list_projects to see the user\'s projects.', retryable: false });
+      const assets = [
+        { id: 'a-1', name: 'Fox banner', mediaType: 'image', assetUrl: 'https://cdn.aitopia.ai/fox.png', folderId: 'f-1', createdAt: '2026-10-01T10:00:00.000Z' },
+        { id: 'a-2', name: 'Teaser', mediaType: 'video', assetUrl: 'https://cdn.aitopia.ai/teaser.mp4', folderId: null, createdAt: '2026-10-02T10:00:00.000Z' },
+      ].filter((a) => (args.folderId ? a.folderId === args.folderId : true) && (args.mediaType ? a.mediaType === args.mediaType : true));
+      return ok({ status: 'completed', project: { id: p.id, name: p.name }, folders: p.folders, assets, total: assets.length, openInAitopia: `https://aitopia.ai/creations?project=${p.id}` });
+    }
+    case 'move_assets': {
+      const urls = (args.assetUrls as string[] | undefined) ?? [];
+      const ids = (args.assetIds as string[] | undefined) ?? [];
+      const missing = [...urls.filter((u) => u.includes('missing')), ...ids.filter((i) => i.includes('missing'))];
+      const moved = [...urls, ...ids].filter((x) => !missing.includes(x)).map((x, i) => ({ id: `m-${i}`, name: 'file', assetUrl: x }));
+      const p = typeof args.projectId === 'string' ? project() : undefined;
+      return ok({ status: 'completed', moved: moved.length, assets: moved, ...(missing.length ? { notFound: missing } : {}), project: p ? { id: p.id, name: p.name } : null, openInAitopia: 'https://aitopia.ai/creations' });
+    }
+    case 'delete_project': {
+      const p = project();
+      if (!p) return fail({ code: 'PROJECT_NOT_FOUND', error: 'Project not found.', retryable: false });
+      projectsDb = projectsDb.filter((x) => x !== p);
+      return ok({ status: 'completed', deleted: { id: p.id, name: p.name }, assetsKept: p.assetCount, note: 'The project and its folders were deleted.' });
+    }
+    case 'list_voices':
+      return ok({ status: 'completed', voices: voicesDb });
+    case 'probe_media': {
+      const url = String(args.assetUrl);
+      if (url.includes('silent')) return ok({ status: 'completed', durationSec: 3, hasVideo: false, hasAudio: false });
+      return ok({ status: 'completed', durationSec: 3.6, hasVideo: url.includes('video'), hasAudio: true });
+    }
+    case 'create_upload_link':
+      if (typeof args.sourceUrl === 'string') return ok({ status: 'completed', assetUrl: 'https://cdn.aitopia.ai/imported-video' });
+      return undefined;
+    case 'create_voice': {
+      if (args.consent !== true) return fail({ code: 'CONSENT_REQUIRED', error: 'consent is required.', retryable: false });
+      if (args.dryRun === true) return estimate(150, '150 credits per voice clone.', 'fal-ai/minimax/voice-clone');
+      const ready = (voiceId: string, voiceName: string, extra: Record<string, unknown> = {}) =>
+        ok({ status: 'completed', voiceId, name: voiceName, state: 'ready', previewUrl: `${base}/files/voice-preview.mp3`, assetUrl: `${base}/files/voice-preview.mp3`, credits: 150, ...extra });
+      if (typeof args.voiceId === 'string') {
+        if (args.voiceId === 'v-slow') return ready('v-slow', 'Slow voice');
+        const voice = voicesDb.find((v) => v.voiceId === args.voiceId);
+        return voice ? ready(String(voice.voiceId), String(voice.name), { recreated: true }) : fail({ code: 'VOICE_NOT_FOUND', error: 'No voice with this voiceId in your voices.' });
+      }
+      if (typeof args.sampleUrl !== 'string' || !args.sampleUrl.startsWith('https://cdn.aitopia.ai/')) {
+        return fail({ code: 'SAMPLE_NOT_OWNED', error: 'The recording must be a file the user uploaded to AITOPIA themselves. Nothing was run or charged.', retryable: false });
+      }
+      if (args.name === 'Taken') return fail({ code: 'VOICE_NAME_TAKEN', error: 'You already have a voice named "Taken".', retryable: false });
+      // Still cloning: the voiceId (no runToken) is how it is finished.
+      if (args.name === 'Slow voice') return ok({ status: 'running', state: 'cloning', voiceId: 'v-slow', name: 'Slow voice', pollAfterMs: 2000, note: 'The clone is still running.' });
+      return ready('v-new', String(args.name));
+    }
+    case 'delete_voice': {
+      const voice = voicesDb.find((v) => v.voiceId === args.voiceId);
+      if (!voice) return fail({ code: 'VOICE_NOT_FOUND', error: 'No voice with this voiceId in your voices.', voiceId: args.voiceId });
+      if (voice.state === 'cloning' && args.force !== true) {
+        return fail({ code: 'VOICE_STILL_CLONING', error: `The voice "${String(voice.name)}" is still being cloned.`, voiceId: args.voiceId });
+      }
+      return ok({ status: 'completed', deleted: true, voiceId: args.voiceId });
+    }
+    case 'generate_audio': {
+      if (args.dryRun === true) return estimate(15, 'The listed price for this model (15 credits).', 'fal-ai/minimax/speech-2.8-hd');
+      if (args.voiceId === 'v-1' && String(args.prompt).includes('expired')) {
+        return fail({ code: 'VOICE_EXPIRED', error: 'The voice "My voice" is no longer available at the voice provider.', voiceId: 'v-1', recreateCredits: 150, hint: 'Do not retry the speech. Re-create the voice from the stored sample: create_voice with {voiceId: "v-1", consent: true}.' });
+      }
+      if (!args.voiceId && !args.selectedModelId) return fail({ code: 'MODEL_REQUIRED', error: 'Choose the audio model.', suggestions: [] });
+      return ok({ status: 'completed', assetUrl: `${base}/files/speech.mp3`, assetName: 'Speech', modelId: args.voiceId ? 'fal-ai/minimax/speech-2.8-hd' : args.selectedModelId });
+    }
+    case 'audio_tools': {
+      const input = args.input as Record<string, unknown>;
+      if (args.dryRun === true) return ok({ status: 'estimate', credits: 1, basis: 'Fixed price for audio_tools: 1 credit per edit.', balance: { creditsForGeneration: balance }, affordable: true });
+      if (input.operation !== 'extract') return fail({ code: 'INVALID_INPUT', error: 'unexpected operation' });
+      return ok({ status: 'completed', assetUrl: 'https://cdn.aitopia.ai/extracted.mp3', assetName: 'talk audio' });
+    }
+    case 'run_model': {
+      if (args.modelId === 'xai/grok-speech-to-text' && args.dryRun !== true) {
+        return ok({ status: 'completed', modelId: args.modelId, jobId: 'stt-1', assetUrl: null, output: { duration: 3.6, language: 'en', text: 'Hello there. This is a test after a pause', words: GROK_WORDS } });
+      }
+      if (args.modelId === 'openai/whisper' && args.dryRun !== true) {
+        return ok({ status: 'completed', modelId: args.modelId, jobId: 'stt-2', assetUrl: null, output: { detected_language: 'swahili', transcription: WHISPER_SRT, segments: [{ start: 0, end: 2, text: ' Habari ya asubuhi.' }, { start: 2, end: 5, text: ' Karibu sana.' }] } });
+      }
+      return undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
 function tool(name: string, args: Record<string, unknown>) {
+  const handled = newTools(name, args);
+  if (handled) return handled;
   switch (name) {
     case 'get_run_status':
       return runStatus(args);
@@ -598,6 +740,26 @@ beforeEach(() => {
   registered = [];
   tokenRequests = [];
   rejectAll = false;
+  projectsDb = [
+    { id: 'p-1111', name: 'Podcast', assetCount: 0, folders: [] },
+    { id: 'p-2222', name: 'Dup', assetCount: 1, folders: [] },
+    { id: 'p-3333', name: 'dup', assetCount: 1, folders: [] },
+    // On the second page of list_projects.
+    {
+      id: 'p-4444',
+      name: 'Spring campaign',
+      assetCount: 3,
+      folders: [
+        { id: 'f-1', name: 'Banners', parentFolderId: null },
+        { id: 'f-2', name: 'Close-ups', parentFolderId: 'f-1' },
+      ],
+    },
+  ];
+  voicesDb = [
+    { voiceId: 'v-1', name: 'My voice', state: 'ready', createdAt: '2026-09-01T10:00:00.000Z', lastUsedAt: null, mayHaveExpired: true },
+    { voiceId: 'v-2', name: 'Cloning one', state: 'cloning', createdAt: '2026-10-01T10:00:00.000Z', lastUsedAt: null },
+    { voiceId: 'v-3', name: 'Fresh', state: 'ready', createdAt: '2026-10-02T10:00:00.000Z', lastUsedAt: '2026-10-02T11:00:00.000Z' },
+  ];
   dir = mkdtempSync(join(tmpdir(), 'aitopia-session-'));
   vi.stubEnv('AITOPIA_CONFIG_DIR', join(dir, 'config'));
   vi.stubEnv('AITOPIA_MCP_URL', '');
@@ -1417,5 +1579,496 @@ describe('edit, server update (POLL_FAILED, PRICE_UNKNOWN, estimated and unchang
     expect(stdout.text).toContain('  1. Resize (ffmpeg) · no change needed, 0 credits');
     expect(stdout.text).toContain('The file was already in the requested form; nothing needed changing.');
     expect(readdirSync(out)).toEqual(['fox-edited.png']);
+  });
+});
+
+const names = () => calls.map((c) => c.name);
+const failure = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e as CliError);
+
+describe('projects', () => {
+  it('matchNamed: exact id, exact name, any-case name, ambiguous names, nothing', () => {
+    const list = [
+      { id: 'p-1', name: 'Spring' },
+      { id: 'p-2', name: 'Dup' },
+      { id: 'p-3', name: 'dup' },
+    ];
+    expect(matchNamed(list, 'p-2', 'project')?.id).toBe('p-2');
+    expect(matchNamed(list, 'Dup', 'project')?.id).toBe('p-2');
+    expect(matchNamed(list, ' spring ', 'project')?.id).toBe('p-1');
+    expect(matchNamed(list, 'nothing', 'project')).toBeUndefined();
+    let error: CliError | undefined;
+    try {
+      matchNamed(list, 'DUP', 'project');
+    } catch (e) {
+      error = e as CliError;
+    }
+    expect(error?.exitCode).toBe(2);
+    expect(error?.code).toBe('AMBIGUOUS_NAME');
+    expect(error?.hint).toContain('p-2 (Dup), p-3 (dup)');
+  });
+
+  it('show finds a project by name on a later page and a folder by name, then lists its files', async () => {
+    await projectsShowCommand(ctx(), 'spring CAMPAIGN', { folder: 'banners' });
+    expect(names()).toEqual(['list_projects', 'list_projects', 'list_project_assets', 'list_project_assets']);
+    expect(calls[1]?.args).toEqual({ limit: 100, offset: 3 });
+    expect(calls[3]?.args).toEqual({ projectId: 'p-4444', folderId: 'f-1' });
+    expect(stdout.text).toContain('Spring campaign / Banners  1 file');
+    expect(stdout.text).toContain('Fox banner');
+    expect(stdout.text).not.toContain('Teaser');
+  });
+
+  it('show lists folders with their paths and every file', async () => {
+    await projectsShowCommand(ctx(), 'p-4444', {});
+    expect(stdout.text).toContain('Banners / Close-ups');
+    expect(stdout.text).toMatch(/Teaser\s+video\s+-\s+2026-10-02/);
+  });
+
+  it('an ambiguous or missing project is a clear error before anything else', async () => {
+    const ambiguous = await failure(projectsShowCommand(ctx(), 'DUP', {}));
+    expect(ambiguous?.code).toBe('AMBIGUOUS_NAME');
+    expect(ambiguous?.exitCode).toBe(2);
+    const missing = await failure(projectsShowCommand(ctx(), 'Nope', {}));
+    expect(missing?.code).toBe('PROJECT_NOT_FOUND');
+    expect(missing?.exitCode).toBe(1);
+    expect(missing?.hint).toContain('aitopia projects');
+    expect(names()).not.toContain('list_project_assets');
+  });
+
+  it('list prints name, files, id and link; create prints the new project', async () => {
+    await projectsListCommand(ctx(), {});
+    expect(stdout.text).toMatch(/NAME\s+FILES\s+ID\s+LINK/);
+    expect(stdout.text).toContain('Podcast');
+    expect(stderr.text).toContain('Next page: --offset 3');
+    await projectsCreateCommand(ctx(), 'New one', { description: 'x' });
+    expect(calls.at(-1)?.args).toEqual({ name: 'New one', description: 'x' });
+    expect(stdout.text).toContain('Created project "New one" (p-new)');
+  });
+
+  it('image --project/--folder resolves both once, before the paid call, and sends projectId/folderId', async () => {
+    await imageCommand(ctx(), ['fox'], { project: 'spring campaign', folder: 'close-ups', output: `${join(dir, 'o')}/` });
+    expect(names()).toEqual(['list_projects', 'list_projects', 'list_project_assets', 'list_models', 'generate_image']);
+    expect(calls.at(-1)?.args).toMatchObject({ prompt: 'fox', projectId: 'p-4444', folderId: 'f-2' });
+    expect(stderr.text).toContain('Saving to project "Spring campaign", folder "Close-ups".');
+  });
+
+  it('image with a project that does not exist spends nothing', async () => {
+    const error = await failure(imageCommand(ctx(), ['fox'], { project: 'Nope' }));
+    expect(error?.code).toBe('PROJECT_NOT_FOUND');
+    expect(names()).toEqual(['list_projects', 'list_projects']);
+  });
+
+  it('a missing folder also stops before the paid call; --folder without --project is a usage error', async () => {
+    const error = await failure(imageCommand(ctx(), ['fox'], { project: 'Spring campaign', folder: 'Nope' }));
+    expect(error?.code).toBe('FOLDER_NOT_FOUND');
+    expect(names()).not.toContain('generate_image');
+    calls = [];
+    const usage = await failure(imageCommand(ctx(), ['fox'], { folder: 'Banners' }));
+    expect(usage?.exitCode).toBe(2);
+    expect(calls).toEqual([]);
+  });
+
+  it('batch, edit and video pass the resolved project too', async () => {
+    const file = join(dir, 'b.json');
+    writeFileSync(file, JSON.stringify([{ kind: 'image', prompt: 'fox', modelId: 'google/nano-banana-2' }]));
+    await batchCommand(ctx(), file, { project: 'Podcast', dryRun: true });
+    expect(calls.find((c) => c.name === 'generate_batch')?.args).toMatchObject({ projectId: 'p-1111' });
+    calls = [];
+    await editCommand(ctx(), 'https://cdn.aitopia.ai/fox.png', ['remove', 'the', 'background'], { project: 'Podcast', dryRun: true });
+    expect(calls.find((c) => c.name === 'edit_media')?.args).toMatchObject({ projectId: 'p-1111' });
+    calls = [];
+    await videoCommand(ctx(), ['waves'], { model: 'acme/i2v', project: 'Podcast', dryRun: true });
+    expect(calls.find((c) => c.name === 'run_model')?.args).toMatchObject({ projectId: 'p-1111' });
+  });
+
+  it('move: URLs and ids into a project folder; files not found are listed and exit 1', async () => {
+    await projectsMoveCommand(ctx(), ['https://cdn.aitopia.ai/a.png', 'asset-1234abcd'], { to: 'Spring campaign', folder: 'Banners' });
+    expect(calls.at(-1)?.args).toEqual({ projectId: 'p-4444', folderId: 'f-1', assetUrls: ['https://cdn.aitopia.ai/a.png'], assetIds: ['asset-1234abcd'] });
+    expect(stdout.text).toContain('Moved 2 files to "Spring campaign" / "Banners".');
+    const error = await failure(projectsMoveCommand(ctx(true), ['https://cdn.aitopia.ai/a.png', 'https://cdn.aitopia.ai/missing.png'], { to: 'Podcast' }));
+    expect(error?.code).toBe('ASSETS_NOT_FOUND');
+    expect(error?.exitCode).toBe(1);
+    expect(error?.data).toMatchObject({ status: 'partial', moved: 1, notFound: ['https://cdn.aitopia.ai/missing.png'] });
+    expect(jsonStatus(error as CliError)).toBe('partial');
+  });
+
+  it('move --out sends projectId null; --to with --out, or neither, is a usage error', async () => {
+    await projectsMoveCommand(ctx(), ['https://cdn.aitopia.ai/a.png'], { out: true });
+    expect(calls.at(-1)?.args).toEqual({ projectId: null, assetUrls: ['https://cdn.aitopia.ai/a.png'] });
+    expect(stdout.text).toContain('out of their project');
+    calls = [];
+    expect((await failure(projectsMoveCommand(ctx(), ['x-12345678'], { out: true, to: 'Podcast' })))?.exitCode).toBe(2);
+    expect((await failure(projectsMoveCommand(ctx(), ['x-12345678'], {})))?.exitCode).toBe(2);
+    expect((await failure(projectsMoveCommand(ctx(), ['./local.png'], { out: true })))?.exitCode).toBe(2);
+    expect(calls).toEqual([]);
+  });
+
+  it('delete asks first: "no" deletes nothing, "yes" deletes and says the files stay in Creations', async () => {
+    const asked: string[] = [];
+    const c = ctx();
+    c.confirm = async (q) => {
+      asked.push(q);
+      return false;
+    };
+    const declined = await failure(projectsDeleteCommand(c, 'spring campaign', {}));
+    expect(declined?.exitCode).toBe(1);
+    expect(declined?.code).toBe('NOT_CONFIRMED');
+    expect(declined?.message).toBe('Not deleted.');
+    expect(asked[0]).toContain('Delete the project "Spring campaign" and its folders? Its 3 files stay in your AITOPIA Creations.');
+    expect(names()).not.toContain('delete_project');
+
+    const c2 = ctx();
+    c2.confirm = async () => true;
+    await projectsDeleteCommand(c2, 'spring campaign', {});
+    expect(calls.at(-1)).toMatchObject({ name: 'delete_project', args: { projectId: 'p-4444' } });
+    expect(stdout.text).toContain('Its 3 files stay in your AITOPIA Creations, outside any project.');
+  });
+
+  it('delete without a terminal (or with --json) needs --yes; --yes deletes without asking', async () => {
+    const error = await failure(projectsDeleteCommand(ctx(true), 'Podcast', {}));
+    expect(error?.exitCode).toBe(2);
+    expect(error?.message).toContain('Add --yes');
+    expect(names()).not.toContain('delete_project');
+    await projectsDeleteCommand(ctx(true), 'Podcast', { yes: true });
+    expect(JSON.parse(stdout.text)).toMatchObject({ status: 'completed', deleted: { id: 'p-1111' } });
+  });
+});
+
+describe('voices', () => {
+  it('create refuses without --consent (exit 2, explains it) before connecting', async () => {
+    const sample = join(dir, 'me.m4a');
+    writeFileSync(sample, 'audio bytes');
+    const error = await failure(voicesCreateCommand(ctx(), 'My voice', sample, {}));
+    expect(error?.exitCode).toBe(2);
+    expect(error?.message).toContain('your own voice, or that the speaker gave you permission');
+    expect(calls).toEqual([]);
+  });
+
+  it('create uploads a local sample, follows a running clone to the end and saves the preview', async () => {
+    const sample = join(dir, 'me.m4a');
+    writeFileSync(sample, 'audio bytes');
+    const out = join(dir, 'previews');
+    await voicesCreateCommand(ctx(), 'Slow voice', sample, { consent: true, language: 'English', output: `${out}/` });
+    expect(names()).toEqual(['upload_asset', 'create_voice', 'create_voice']);
+    expect(calls[1]?.args).toEqual({ consent: true, name: 'Slow voice', sampleUrl: 'https://cdn.aitopia.ai/uploaded.png', language: 'English' });
+    // Finished by its voiceId, never a new clone.
+    expect(calls[2]?.args).toEqual({ voiceId: 'v-slow', consent: true });
+    expect(stderr.text).toContain('(150 credits)');
+    expect(stdout.text).toContain('Ready: the voice "Slow voice" (v-slow)');
+    expect(stdout.text).toContain(`Preview: ${base}/files/voice-preview.mp3`);
+    expect(readdirSync(out)).toEqual(['slow-voice-preview.mp3']);
+    expect(stdout.text).toContain('aitopia audio "Hello there." --voice "Slow voice"');
+  }, 15_000);
+
+  it('create --dry-run shows the 150-credit price; --no-download prints the preview URL', async () => {
+    const sample = join(dir, 'me.m4a');
+    writeFileSync(sample, 'audio bytes');
+    await voicesCreateCommand(ctx(), 'Mine', sample, { consent: true, dryRun: true });
+    expect(calls.at(-1)?.args).toMatchObject({ consent: true, dryRun: true });
+    expect(stdout.text).toContain('Estimate: 150 credits');
+    calls = [];
+    await voicesCreateCommand(ctx(), 'Mine', 'https://cdn.aitopia.ai/take.mp3', { consent: true, download: false });
+    // An AITOPIA URL is used as is.
+    expect(names()).toEqual(['create_voice']);
+    expect(stdout.text).toContain(`${base}/files/voice-preview.mp3`);
+  });
+
+  it('create without a sample re-creates one of your voices by its voiceId', async () => {
+    await voicesCreateCommand(ctx(), 'my voice', undefined, { consent: true, download: false });
+    expect(calls.at(-1)?.args).toEqual({ consent: true, voiceId: 'v-1' });
+    expect(stdout.text).toContain('was re-created');
+  });
+
+  it('VOICE_NAME_TAKEN and SAMPLE_NOT_OWNED get CLI hints', async () => {
+    const taken = await failure(voicesCreateCommand(ctx(), 'Taken', 'https://cdn.aitopia.ai/take.mp3', { consent: true }));
+    expect(taken?.code).toBe('VOICE_NAME_TAKEN');
+    expect(taken?.hint).toContain('aitopia voices delete');
+    const foreign = failureToError({ code: 'SAMPLE_NOT_OWNED', error: 'The recording must be a file the user uploaded.' });
+    expect(foreign.hint).toContain('aitopia upload');
+  });
+
+  it('list shows state, dates and the "may have expired" note', async () => {
+    await voicesListCommand(ctx());
+    expect(stdout.text).toMatch(/My voice\s+ready\s+2026-09-01\s+never\s+v-1\s+may have expired/);
+    expect(stdout.text).toContain('still being created');
+    expect(stderr.text).toContain('aitopia voices create <name> --consent (150 credits)');
+  });
+
+  it('delete: a voice still being created needs --force (hint says so); --yes and --force pass through', async () => {
+    const error = await failure(voicesDeleteCommand(ctx(), 'cloning one', { yes: true }));
+    expect(error?.code).toBe('VOICE_STILL_CLONING');
+    expect(error?.hint).toContain('--force');
+    await voicesDeleteCommand(ctx(), 'cloning one', { yes: true, force: true });
+    expect(calls.at(-1)?.args).toEqual({ voiceId: 'v-2', force: true });
+    expect(stdout.text).toContain('Deleted the voice "Cloning one".');
+    const json = await failure(voicesDeleteCommand(ctx(true), 'My voice', {}));
+    expect(json?.exitCode).toBe(2);
+  });
+
+  it('audio --voice resolves the name to voiceId and lets the voice pick its model', async () => {
+    const out = join(dir, 'speech');
+    await audioCommand(ctx(), ['Thanks', 'for', 'watching.'], { voice: 'MY VOICE', output: `${out}/` });
+    expect(names()).toEqual(['list_voices', 'generate_audio']);
+    expect(calls[1]?.args).toEqual({ prompt: 'Thanks for watching.', voiceId: 'v-1' });
+    expect(stderr.text).toContain('Voice: My voice');
+    expect(readdirSync(out)).toHaveLength(1);
+  });
+
+  it('audio --voice: VOICE_EXPIRED says how to re-create it and what it costs; an unknown voice spends nothing', async () => {
+    const error = await failure(audioCommand(ctx(), ['this', 'voice', 'expired'], { voice: 'My voice' }));
+    expect(error?.code).toBe('VOICE_EXPIRED');
+    expect(error?.hint).toContain('aitopia voices create <name> --consent');
+    expect(error?.hint).toContain('150 credits');
+    calls = [];
+    const missing = await failure(audioCommand(ctx(), ['hi'], { voice: 'Nobody' }));
+    expect(missing?.code).toBe('VOICE_NOT_FOUND');
+    expect(names()).toEqual(['list_voices']);
+    expect((await failure(audioCommand(ctx(), ['hi'], { voice: 'My voice', model: 'x/y' })))?.exitCode).toBe(2);
+  });
+});
+
+describe('transcribe', () => {
+  it('a video: uploads it, extracts the audio with audio_tools, transcribes with Grok and saves <name>.srt', async () => {
+    const video = join(dir, 'talk.mp4');
+    writeFileSync(video, 'video bytes');
+    const out = join(dir, 'subs');
+    await transcribeCommand(ctx(), video, { output: `${out}/` });
+    // The price check before the paid run is free (dryRun).
+    expect(names()).toEqual(['upload_asset', 'audio_tools', 'run_model', 'run_model']);
+    expect(calls[1]?.args).toEqual({ input: { assetUrl: 'https://cdn.aitopia.ai/uploaded.png', operation: 'extract' } });
+    expect(calls[2]?.args.dryRun).toBe(true);
+    expect(calls[3]?.args).toEqual({ modelId: 'xai/grok-speech-to-text', input: { audio: 'https://cdn.aitopia.ai/extracted.mp3', timestamps: true } });
+    expect(readdirSync(out)).toEqual(['talk.srt']);
+    const srt = readFileSync(join(out, 'talk.srt'), 'utf8');
+    expect(srt).toBe(
+      '1\n00:00:00,100 --> 00:00:00,800\nHello there.\n\n2\n00:00:01,000 --> 00:00:01,800\nThis is a test\n\n3\n00:00:02,600 --> 00:00:03,500\nafter a pause\n',
+    );
+    expect(stdout.text).toContain('Saved');
+    expect(stdout.text).toContain('(3 cues, en, 0:04)');
+    expect(stderr.text).toContain('Extracting the audio (1 credit)');
+    // The price comes from the dryRun estimate, never hard-coded.
+    expect(stderr.text).toContain('Transcribing with xai/grok-speech-to-text (50 credits)');
+  });
+
+  it('a language outside Grok\'s 25 runs Whisper with an SRT and keeps its segments', async () => {
+    const out = join(dir, 'sw.srt');
+    await transcribeCommand(ctx(), 'https://example.com/podcast.mp3', { language: 'sw', output: out });
+    expect(names()).toEqual(['run_model', 'run_model']);
+    expect(calls[1]?.args).toEqual({ modelId: 'openai/whisper', input: { audio: 'https://example.com/podcast.mp3', transcription: 'srt', language: 'sw' } });
+    expect(readFileSync(out, 'utf8')).toBe('1\n00:00:00,000 --> 00:00:02,000\nHabari ya asubuhi.\n\n2\n00:00:02,000 --> 00:00:05,000\nKaribu sana.\n');
+  });
+
+  it('--format txt prints the text; json saves the words; the -o extension picks the format; --words gives one cue per word', async () => {
+    await transcribeCommand(ctx(), 'https://example.com/a.mp3', { format: 'txt' });
+    expect(stdout.text.trim()).toBe('Hello there. This is a test after a pause');
+    const json = join(dir, 'a.json');
+    await transcribeCommand(ctx(), 'https://example.com/a.mp3', { output: json });
+    const saved = JSON.parse(readFileSync(json, 'utf8')) as { words: unknown[]; language: string; modelId: string };
+    expect(saved.words).toHaveLength(9);
+    expect(saved).toMatchObject({ language: 'en', modelId: 'xai/grok-speech-to-text' });
+    const words = join(dir, 'w.srt');
+    await transcribeCommand(ctx(), 'https://example.com/a.mp3', { output: words, words: true });
+    expect(readFileSync(words, 'utf8').split('\n\n')).toHaveLength(9);
+  });
+
+  it('--json prints one object with the text, cues and saved file', async () => {
+    const out = join(dir, 'j.srt');
+    await transcribeCommand(ctx(true), 'https://example.com/a.mp3', { output: out });
+    const parsed = JSON.parse(stdout.text) as Record<string, unknown>;
+    expect(parsed).toMatchObject({ status: 'completed', modelId: 'xai/grok-speech-to-text', format: 'srt', cueCount: 3, files: [out] });
+  });
+
+  it('--dry-run of a local video prices both steps and uploads nothing', async () => {
+    const video = join(dir, 'talk.mp4');
+    writeFileSync(video, 'video bytes');
+    await transcribeCommand(ctx(), video, { dryRun: true });
+    expect(names()).toEqual(['run_model', 'audio_tools']);
+    expect(calls.every((c) => c.args.dryRun === true)).toBe(true);
+    expect(stdout.text).toContain('Estimate: 51 credits (1 credit to extract the audio, 50 credits to transcribe it)');
+    expect(stdout.text).toContain('Nothing was submitted or charged.');
+  });
+
+  it('an image or a bad --format is a usage error before connecting', async () => {
+    const image = join(dir, 'x.png');
+    writeFileSync(image, 'png');
+    expect((await failure(transcribeCommand(ctx(), image, {})))?.exitCode).toBe(2);
+    expect((await failure(transcribeCommand(ctx(), 'https://example.com/a.mp3', { format: 'vtt' })))?.exitCode).toBe(2);
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('subtitle cues', () => {
+  const w = (text: string, start: number, end: number) => ({ text, start, end });
+
+  it('break after sentence punctuation and on pauses over 0.6 s', () => {
+    const cues = cuesFromWords([w('Hi.', 0, 0.3), w('Next', 0.4, 0.6), w('one', 0.7, 0.9), w('later', 1.6, 1.9)]);
+    expect(cues.map((c) => c.text)).toEqual(['Hi.', 'Next one', 'later']);
+  });
+
+  it('a cue lasts at most 3.5 s and holds at most two lines of 42 characters', () => {
+    const slow = Array.from({ length: 10 }, (_, i) => w(`w${i}`, i * 0.5, i * 0.5 + 0.45));
+    for (const cue of cuesFromWords(slow)) expect(cue.end - cue.start).toBeLessThanOrEqual(3.5);
+    const long = Array.from({ length: 30 }, (_, i) => w('wordy', i * 0.1, i * 0.1 + 0.05));
+    for (const cue of cuesFromWords(long)) expect(cue.text.length).toBeLessThanOrEqual(84);
+    const wrapped = wrapCue('one two three four five six seven eight nine ten eleven');
+    expect(wrapped.split('\n')).toHaveLength(2);
+    for (const line of wrapped.split('\n')) expect(line.length).toBeLessThanOrEqual(42);
+  });
+
+  it('SRT timestamps; a zero-length cue is held half a second; Whisper only outside Grok\'s languages', () => {
+    expect(buildSrt([w('Hi', 3661.5, 3661.5)])).toBe('1\n01:01:01,500 --> 01:01:02,000\nHi\n');
+    expect(sttModelFor(undefined)).toBe('xai/grok-speech-to-text');
+    expect(sttModelFor('TR')).toBe('xai/grok-speech-to-text');
+    expect(sttModelFor('sw')).toBe('openai/whisper');
+  });
+});
+
+describe('new error code hints', () => {
+  it.each([
+    ['VOICE_EXPIRED', 'aitopia voices create <name> --consent'],
+    ['VOICE_BEING_CREATED', 'not charged again'],
+    ['VOICE_NAME_TAKEN', 'aitopia voices delete'],
+    ['SAMPLE_NOT_OWNED', 'aitopia upload'],
+    ['USE_CREATE_VOICE', 'aitopia voices create <name> <sample> --consent'],
+    ['VOICES_UNAVAILABLE', 'try again later'],
+    ['PROJECT_NOT_FOUND', 'aitopia projects'],
+    ['FOLDER_NOT_FOUND', 'aitopia projects show'],
+    ['PROJECTS_UNAVAILABLE', 'Creations'],
+    ['NAME_CONFLICT', 'another name'],
+    ['MODEL_DISABLED', 'aitopia models'],
+  ])('%s', (code, wording) => {
+    const error = failureToError({ code, error: 'Server text.', hint: 'Call create_voice with {voiceId}.' });
+    expect(error.code).toBe(code);
+    expect(error.exitCode).toBe(1);
+    expect(error.hint).toContain(wording);
+  });
+});
+
+describe('review fixes: voices, transcribe, cues', () => {
+  it('voices create without a sample: a ready voice asks first; no -> exit 1, nothing charged; --json needs --yes', async () => {
+    const asked: string[] = [];
+    const c = ctx();
+    c.confirm = async (q) => {
+      asked.push(q);
+      return false;
+    };
+    const declined = await failure(voicesCreateCommand(c, 'fresh', undefined, { consent: true }));
+    expect(declined?.code).toBe('NOT_CONFIRMED');
+    expect(declined?.exitCode).toBe(1);
+    expect(asked[0]).toContain('for 150 credits?');
+    expect(names()).not.toContain('create_voice');
+    const json = await failure(voicesCreateCommand(ctx(true), 'fresh', undefined, { consent: true }));
+    expect(json?.exitCode).toBe(2);
+    expect(json?.message).toContain('--yes');
+    expect(names()).not.toContain('create_voice');
+  });
+
+  it('voices create without a sample: --yes re-creates a ready voice and shows the 150-credit price', async () => {
+    await voicesCreateCommand(ctx(), 'Fresh', undefined, { consent: true, yes: true, download: false });
+    expect(calls.at(-1)?.args).toEqual({ consent: true, voiceId: 'v-3' });
+    expect(stderr.text).toContain('Re-creating the voice "Fresh" from its stored sample (150 credits)');
+  });
+
+  it('voices create without a sample: an expired voice needs no question but still shows the price; a cloning one is finished free', async () => {
+    const c = ctx();
+    c.confirm = async () => {
+      throw new Error('must not ask');
+    };
+    await voicesCreateCommand(c, 'My voice', undefined, { consent: true, download: false });
+    expect(stderr.text).toContain('(150 credits)');
+    const c2 = ctx();
+    c2.confirm = c.confirm;
+    await voicesCreateCommand(c2, 'Cloning one', undefined, { consent: true, download: false }).catch(() => undefined);
+    expect(calls.at(-1)?.args).toEqual({ consent: true, voiceId: 'v-2' });
+    expect(stderr.text).toContain('not charged again');
+    expect(stderr.text).not.toContain('150 credits');
+  });
+
+  it('voices delete answered no exits 1 "Not deleted"', async () => {
+    const c = ctx();
+    c.confirm = async () => false;
+    const error = await failure(voicesDeleteCommand(c, 'Fresh', {}));
+    expect(error?.message).toBe('Not deleted.');
+    expect(error?.exitCode).toBe(1);
+    expect(names()).not.toContain('delete_voice');
+  });
+
+  it('transcribe checks the output folder before anything is spent', async () => {
+    const file = join(dir, 'a-file');
+    writeFileSync(file, 'x');
+    const error = await failure(transcribeCommand(ctx(), 'https://example.com/a.mp3', { output: join(file, 'sub', 'out.srt') }));
+    expect(error?.exitCode).toBe(2);
+    expect(calls).toEqual([]);
+  });
+
+  it.skipIf(process.getuid?.() === 0)('transcribe prints the transcript when saving fails after the run', async () => {
+    const out = join(dir, 'locked.srt');
+    writeFileSync(out, 'old');
+    chmodSync(out, 0o444);
+    const error = await failure(transcribeCommand(ctx(), 'https://example.com/a.mp3', { output: out, force: true }));
+    expect(error?.code).toBe('WRITE_FAILED');
+    expect(error?.exitCode).toBe(1);
+    expect(stdout.text).toContain('Hello there.');
+    expect(stdout.text).toContain('00:00:00,100 --> 00:00:00,800');
+  });
+
+  it('a language with a region is normalized: pt-BR runs Grok as pt, sw-KE runs Whisper as sw', async () => {
+    expect(normalizeLanguage(' pt-BR ')).toBe('pt');
+    expect(normalizeLanguage('zh_Hant_TW')).toBe('zh');
+    expect(normalizeLanguage('English')).toBe('English');
+    await transcribeCommand(ctx(), 'https://example.com/a.mp3', { language: 'pt-BR', output: join(dir, 'pt.srt') });
+    expect(calls.at(-1)?.args).toEqual({ modelId: 'xai/grok-speech-to-text', input: { audio: 'https://example.com/a.mp3', timestamps: true, language: 'pt' } });
+    await transcribeCommand(ctx(), 'https://example.com/a.mp3', { language: 'sw-KE', output: join(dir, 'sw.srt') });
+    expect(calls.at(-1)?.args).toMatchObject({ modelId: 'openai/whisper', input: { language: 'sw' } });
+  });
+
+  it('a URL without a telling name is probed (free) first: a video is imported and its sound extracted', async () => {
+    await transcribeCommand(ctx(), 'https://example.com/media/clip-video', { output: join(dir, 'p.srt') });
+    expect(names()).toEqual(['probe_media', 'create_upload_link', 'audio_tools', 'run_model', 'run_model']);
+    expect(calls[2]?.args).toEqual({ input: { assetUrl: 'https://cdn.aitopia.ai/imported-video', operation: 'extract' } });
+  });
+
+  it('the dry-run price of a probed video includes the extraction; a file with no sound spends nothing', async () => {
+    await transcribeCommand(ctx(), 'https://example.com/media/clip-video', { dryRun: true });
+    expect(names()).toEqual(['probe_media', 'run_model', 'audio_tools']);
+    expect(stdout.text).toContain('to extract the audio');
+    calls = [];
+    const error = await failure(transcribeCommand(ctx(), 'https://example.com/media/silent', { output: join(dir, 's.srt') }));
+    expect(error?.code).toBe('NO_AUDIO');
+    expect(names()).toEqual(['probe_media']);
+  });
+
+  it('Japanese words are joined without spaces and break after 。', () => {
+    const w = (text: string, start: number, end: number) => ({ text, start, end });
+    const words = [w('こんにちは', 0, 0.5), w('世界。', 0.5, 1), w('元気', 1.1, 1.4), w('です', 1.4, 1.7)];
+    expect(cuesFromWords(words).map((c) => c.text)).toEqual(['こんにちは世界。', '元気です']);
+    const thai = cuesOf({ text: '', language: 'th', words: [w('a', 0, 0.2), w('b', 0.2, 0.4)], segments: [] });
+    expect(thai[0]?.text).toBe('ab');
+  });
+
+  it('wrapCue keeps every line within 42 characters, also when no space balances the lines', () => {
+    for (const text of [`${'a'.repeat(40)} ${'b'.repeat(43)}`, 'x'.repeat(80), `${'word '.repeat(16)}end`, 'y'.repeat(130)]) {
+      for (const line of wrapCue(text).split('\n')) expect(line.length).toBeLessThanOrEqual(42);
+    }
+    expect(wrapCue(`${'a'.repeat(40)} ${'b'.repeat(43)}`).split('\n')).toHaveLength(2);
+  });
+
+  it('a long Whisper segment is split into several cues by time share', () => {
+    const text = 'one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty';
+    const cues = splitSegment({ start: 10, end: 20, text });
+    expect(cues.length).toBeGreaterThanOrEqual(3);
+    expect(cues[0]?.start).toBe(10);
+    expect(cues.at(-1)?.end).toBeCloseTo(20);
+    for (const [i, cue] of cues.entries()) {
+      expect(cue.text.length).toBeLessThanOrEqual(84);
+      expect(cue.end - cue.start).toBeLessThanOrEqual(3.5);
+      if (i > 0) expect(cue.start).toBeCloseTo(cues[i - 1]?.end ?? 0);
+    }
+    expect(cues.map((c) => c.text).join(' ')).toBe(text);
+  });
+
+  it('a zero-length cue is held half a second, but never past the next cue', () => {
+    const w = (text: string, start: number, end: number) => ({ text, start, end });
+    expect(buildSrt([w('a', 1, 1), w('b', 1.2, 1.5)])).toContain('00:00:01,000 --> 00:00:01,200');
+    expect(buildSrt([w('a', 1, 1), w('b', 3, 3.5)])).toContain('00:00:01,000 --> 00:00:01,500');
   });
 });

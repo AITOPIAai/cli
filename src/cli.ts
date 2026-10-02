@@ -16,11 +16,23 @@ import { imageCommand } from './commands/image.js';
 import { loginCommand } from './commands/login.js';
 import { logoutCommand } from './commands/logout.js';
 import { modelCommand, modelsCommand, MODEL_TYPES } from './commands/models.js';
+import {
+  PROJECT_MEDIA_TYPES,
+  projectsCreateCommand,
+  projectsDeleteCommand,
+  projectsFolderCommand,
+  projectsListCommand,
+  projectsMoveCommand,
+  projectsRenameCommand,
+  projectsShowCommand,
+} from './commands/projects.js';
 import { runCommand } from './commands/run.js';
 import { statusCommand } from './commands/status.js';
 import { toolsCommand } from './commands/tools.js';
+import { TRANSCRIBE_FORMATS, transcribeCommand } from './commands/transcribe.js';
 import { uploadCommand } from './commands/upload.js';
 import { videoCommand } from './commands/video.js';
+import { VOICE_CLONE_CREDITS, voicesCreateCommand, voicesDeleteCommand, voicesListCommand } from './commands/voices.js';
 
 type Action = (globals: GlobalOptions, ...args: unknown[]) => Promise<void>;
 
@@ -42,6 +54,13 @@ function addDeliveryOptions(command: Command): Command {
     .option('--no-download', 'print the file URLs instead of downloading');
 }
 
+/** --project / --folder: where the result is saved in AITOPIA (resolved before anything is spent). */
+function addScopeOptions(command: Command): Command {
+  return command
+    .option('--project <name|id>', 'save the result in this project (a name or id from `aitopia projects`; checked before anything is spent)')
+    .option('--folder <name|id>', 'save it in this folder of --project');
+}
+
 const EXAMPLES = `
 Examples:
   $ aitopia login
@@ -50,6 +69,11 @@ Examples:
   $ aitopia video "the fox turns its head and blinks" --image fox.png
   $ aitopia audio "Welcome to AITOPIA." -o welcome.mp3
   $ aitopia edit photo.jpg "remove the background, upscale it, make it 9:16"
+  $ aitopia image "spring sale banner" --project "Spring campaign" --folder Banners
+  $ aitopia projects create "Spring campaign"
+  $ aitopia voices create "My voice" sample.m4a --consent
+  $ aitopia audio "Thanks for watching." --voice "My voice"
+  $ aitopia transcribe interview.mp4 -o interview.srt
   $ aitopia video "slow pan over a harbor" --duration 10 --dry-run
   $ aitopia batch shots.json -o shots/
   $ aitopia status <runToken> <runToken> --wait
@@ -114,7 +138,7 @@ export function buildProgram(): Command {
     .argument('<id>', 'model id from `aitopia models`')
     .action(action((g, id) => modelCommand(createContext(g), id as string)));
 
-  addDeliveryOptions(
+  const image = addDeliveryOptions(
     program
       .command('image')
       .description('generate images')
@@ -125,9 +149,10 @@ export function buildProgram(): Command {
       .option('--name <name>', 'name for the saved asset')
       .option('--set <key=value>', 'extra model field (repeatable, value parsed as JSON)', collect)
       .option('--dry-run', DRY_RUN_HELP),
-  ).action(action((g, words, opts) => imageCommand(createContext(g), words as string[], opts as Parameters<typeof imageCommand>[2])));
+  );
+  addScopeOptions(image).action(action((g, words, opts) => imageCommand(createContext(g), words as string[], opts as Parameters<typeof imageCommand>[2])));
 
-  addDeliveryOptions(
+  const video = addDeliveryOptions(
     program
       .command('video')
       .description('generate a video (from text, or from a start image)')
@@ -139,20 +164,36 @@ export function buildProgram(): Command {
       .option('--name <name>', 'name for the saved asset')
       .option('--set <key=value>', 'any model field (repeatable, value parsed as JSON)', collect)
       .option('--dry-run', `${DRY_RUN_HELP} (a local --image is not uploaded)`),
-  ).action(action((g, words, opts) => videoCommand(createContext(g), words as string[], opts as Parameters<typeof videoCommand>[2])));
+  );
+  addScopeOptions(video).action(action((g, words, opts) => videoCommand(createContext(g), words as string[], opts as Parameters<typeof videoCommand>[2])));
 
-  addDeliveryOptions(
+  const audio = addDeliveryOptions(
     program
       .command('audio')
-      .description('generate speech, music or sound')
+      .description('generate speech, music or sound (or speak in one of your cloned voices)')
       .argument('<prompt...>', 'the text to speak, or a description of the sound')
       .option('--model <id>', 'model id (default: a current AITOPIA audio model, printed on use)')
+      .option('--voice <name|id>', 'speak the text in one of your cloned voices (see `aitopia voices`); uses that voice\'s speech model')
       .option('--name <name>', 'name for the saved asset')
-      .option('--set <key=value>', 'extra model field, e.g. voice (repeatable, value parsed as JSON)', collect)
-      .option('--dry-run', DRY_RUN_HELP),
-  ).action(action((g, words, opts) => audioCommand(createContext(g), words as string[], opts as Parameters<typeof audioCommand>[2])));
+      .option('--set <key=value>', 'extra model field (repeatable, value parsed as JSON)', collect)
+      .option('--dry-run', DRY_RUN_HELP)
+      .addHelpText(
+        'after',
+        `
+Examples:
+  $ aitopia audio "Welcome to AITOPIA." -o welcome.mp3
+  $ aitopia audio "Thanks for watching, see you next week." --voice "My voice"
+  $ aitopia audio "rain on a tin roof, distant thunder" --model <sound-model-id>
+  $ aitopia audio "Our spring range is here." --voice "My voice" --project "Spring campaign" --dry-run
 
-  addDeliveryOptions(
+--voice takes a voice name or id from \`aitopia voices\` (clone one with \`aitopia voices create\`).
+A voice that expired at the provider fails with VOICE_EXPIRED: re-create it with
+\`aitopia voices create <name> --consent\` (${VOICE_CLONE_CREDITS} credits).`,
+      ),
+  );
+  addScopeOptions(audio).action(action((g, words, opts) => audioCommand(createContext(g), words as string[], opts as Parameters<typeof audioCommand>[2])));
+
+  const edit = addDeliveryOptions(
     program
       .command('edit')
       .description('edit an image, video or audio file in plain words (AITOPIA plans and runs the steps)')
@@ -175,7 +216,256 @@ If a step fails, the steps before it are kept: the last finished file is saved
 Exit: 0 done (also --dry-run when your balance is short; it says so), 1 failed or
 over --max-credits (the plan and total are shown, nothing ran), 5 outcome unknown.`,
       ),
-  ).action(action((g, file, words, opts) => editCommand(createContext(g), file as string, words as string[], opts as Parameters<typeof editCommand>[3])));
+  );
+  addScopeOptions(edit).action(action((g, file, words, opts) => editCommand(createContext(g), file as string, words as string[], opts as Parameters<typeof editCommand>[3])));
+
+  program
+    .command('transcribe')
+    .description('turn speech in an audio or video file into subtitles (SRT) or text; 1 credit (2 for a video)')
+    .argument('<file|url>', 'the audio or video (a local file is uploaded first) or its https URL')
+    .addOption(new Option('--format <format>', 'what to save: srt subtitles, txt plain text, or json with the timings (default: from the -o extension, else srt)').choices([...TRANSCRIBE_FORMATS]))
+    .option('--language <code>', 'language spoken, e.g. en, tr, de (default: detected); a language outside Grok\'s 25 runs Whisper')
+    .option('--words', 'one subtitle per word (word-by-word captions); with --json, also the word timings')
+    .option('--dry-run', `${DRY_RUN_HELP} (a local file is not uploaded)`)
+    .option('-o, --output <path>', 'file, directory, or - for stdout (default: <file name>.srt in the current directory)')
+    .option('--force', 'overwrite an existing file')
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia transcribe interview.mp3                  # saves interview.srt here
+  $ aitopia transcribe talk.mp4 -o subs/              # a video: its sound is extracted first
+  $ aitopia transcribe memo.m4a --format txt          # prints the plain text
+  $ aitopia transcribe podcast.mp3 --language sw -o podcast.json
+
+Speech to text runs xai/grok-speech-to-text (word timings; 25 languages: ar cs da de
+en es fa fil fr hi id it ja ko mk ms nl pl pt ro ru sv th tr vi). Another --language
+runs openai/whisper (100+ languages, coarser timing); a code with a region (pt-BR)
+counts as its language (pt). A run costs what the model lists (1 credit today; the
+price is shown before it runs); a video costs 1 credit more to extract its sound
+(audio_tools). A URL whose name does not tell audio from video is checked first (free).
+Subtitle lines are at most 42 characters, two lines per cue, about 3.5 s per cue, split
+at sentence ends and pauses (Japanese, Chinese and Thai are joined without spaces).
+-o: a file (its extension picks the format), a directory, or - for stdout. The default
+is <file name>.srt (or .json) in the current directory; txt is printed unless -o is given.
+Without --force an existing file is kept and -1, -2 ... is added to the new name.
+The folder is checked before anything is spent; if saving still fails, the transcript
+is printed instead (exit 1), so the paid result is never lost.`,
+    )
+    .action(action((g, file, opts) => transcribeCommand(createContext(g), file as string, opts as Parameters<typeof transcribeCommand>[2])));
+
+  const projects = program
+    .command('projects')
+    .description('organize your AITOPIA files in projects and folders (lists them without a subcommand)')
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia projects
+  $ aitopia projects create "Spring campaign" --description "Ads for the spring sale"
+  $ aitopia projects show "Spring campaign" --type video
+  $ aitopia image "spring sale banner" --project "Spring campaign" --folder Banners
+
+A project or folder is named by its name (any case) or its id. Projects and folders
+are free; files stay in your AITOPIA Creations also when a project is deleted.
+--project / --folder on image, video, audio, edit and batch save new results there.`,
+    );
+
+  projects
+    .command('list', { isDefault: true })
+    .description('list your projects (newest first): name, number of files, id and link')
+    .option('--limit <n>', 'how many to show (1-100)', parseIntegerOption('--limit', 1, 100))
+    .option('--offset <n>', 'skip this many (paging)', parseIntegerOption('--offset', 0, 100_000))
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia projects
+  $ aitopia projects list --limit 10 --offset 10
+  $ aitopia projects --json`,
+    )
+    .action(action((g, opts) => projectsListCommand(createContext(g), opts as Parameters<typeof projectsListCommand>[1])));
+
+  projects
+    .command('create')
+    .description('make a new project')
+    .argument('<name>', 'project name (1-80 characters, unique among your projects)')
+    .option('--description <text>', 'what the project is for')
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia projects create "Spring campaign"
+  $ aitopia projects create "Podcast S2" --description "Episode art and audio"`,
+    )
+    .action(action((g, name, opts) => projectsCreateCommand(createContext(g), name as string, opts as { description?: string })));
+
+  projects
+    .command('show')
+    .description("list a project's folders and files")
+    .argument('<project>', 'project name or id')
+    .option('--folder <name|id>', 'only the files in this folder')
+    .addOption(new Option('--type <type>', 'only this kind of file').choices(PROJECT_MEDIA_TYPES))
+    .option('--limit <n>', 'how many files to show (1-100, default 30)', parseIntegerOption('--limit', 1, 100))
+    .option('--offset <n>', 'skip this many files (paging)', parseIntegerOption('--offset', 0, 100_000))
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia projects show "Spring campaign"
+  $ aitopia projects show "Spring campaign" --folder Banners --type image
+  $ aitopia projects show "Spring campaign" --json | jq -r '.assets[].assetUrl'`,
+    )
+    .action(action((g, project, opts) => projectsShowCommand(createContext(g), project as string, opts as Parameters<typeof projectsShowCommand>[2])));
+
+  projects
+    .command('folder')
+    .description('make a folder in a project')
+    .argument('<project>', 'project name or id')
+    .argument('<name>', 'folder name (1-80 characters)')
+    .option('--parent <name|id>', 'make it inside this folder')
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia projects folder "Spring campaign" Banners
+  $ aitopia projects folder "Spring campaign" "Close-ups" --parent Banners`,
+    )
+    .action(action((g, project, name, opts) => projectsFolderCommand(createContext(g), project as string, name as string, opts as { parent?: string })));
+
+  projects
+    .command('move')
+    .description('move files into a project (or folder), or take them out of their project')
+    .argument('<asset...>', 'file URLs (https://cdn.aitopia.ai/...) or file ids, up to 100')
+    .option('--to <project>', 'the project to move them to (name or id)')
+    .option('--folder <name|id>', 'a folder of --to')
+    .option('--out', 'take them out of their project (they stay in your Creations)')
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia projects move https://cdn.aitopia.ai/.../fox.png --to "Spring campaign"
+  $ aitopia projects move <url> <url> --to "Spring campaign" --folder Banners
+  $ aitopia projects move <url> --out
+
+Files not found among your AITOPIA files are listed; the others are still moved (exit 1).`,
+    )
+    .action(action((g, assets, opts) => projectsMoveCommand(createContext(g), assets as string[], opts as Parameters<typeof projectsMoveCommand>[2])));
+
+  projects
+    .command('rename')
+    .description('rename a project (or change its description)')
+    .argument('<project>', 'project name or id')
+    .argument('<newName>', 'the new name')
+    .option('--description <text>', 'a new description')
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia projects rename "Spring campaign" "Spring 2027"
+  $ aitopia projects rename "Podcast S2" "Podcast S2" --description "Season two"`,
+    )
+    .action(action((g, project, name, opts) => projectsRenameCommand(createContext(g), project as string, name as string, opts as { description?: string })));
+
+  projects
+    .command('delete')
+    .description('delete a project and its folders; its files stay in your Creations')
+    .argument('<project>', 'project name or id')
+    .option('-y, --yes', 'do not ask for confirmation (needed when there is no terminal, e.g. in scripts or with --json)')
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia projects delete "Old tests"
+  $ aitopia projects delete 76616c2c-3d00-4661-954c-0c6db1a93461 --yes
+
+Asks before deleting (answering no exits 1: "Not deleted"; without a terminal, add
+--yes). Only the project and its folders go; every file stays in your AITOPIA
+Creations, outside any project.`,
+    )
+    .action(action((g, project, opts) => projectsDeleteCommand(createContext(g), project as string, opts as { yes?: boolean })));
+
+  const voices = program
+    .command('voices')
+    .description('your cloned voices ("My voices"): list, clone and delete them (lists them without a subcommand)')
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia voices
+  $ aitopia voices create "My voice" sample.m4a --consent --dry-run
+  $ aitopia voices create "My voice" sample.m4a --consent
+  $ aitopia audio "Thanks for watching." --voice "My voice"
+
+Clone only your own voice, or a speaker who gave you permission. A clone costs
+${VOICE_CLONE_CREDITS} credits (--dry-run shows the price and your balance); listing and deleting are free.`,
+    );
+
+  voices
+    .command('list', { isDefault: true })
+    .description('list your voices: name, state, when made and last used')
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia voices
+  $ aitopia voices list --json
+
+A voice never used for speech within 7 days is marked "may have expired": the voice
+provider may have removed it. Re-create it with \`aitopia voices create <name> --consent\`.`,
+    )
+    .action(action((g) => voicesListCommand(createContext(g))));
+
+  addDeliveryOptions(
+    voices
+      .command('create')
+      .description(`clone a voice from a recording of it (${VOICE_CLONE_CREDITS} credits); without a sample, finish or re-create one of your voices`)
+      .argument('<name>', 'name for the voice (1-60 characters, unique among your voices)')
+      .argument('[sample]', 'the recording: an audio file or a video with sound, 10 s to 5 min, one speaker (a local file is uploaded first)')
+      .option('--consent', 'required: confirms the recording is your own voice, or the speaker gave you permission to clone it')
+      .option('--language <name>', 'language spoken in the sample, e.g. English')
+      .option('-y, --yes', 're-create a voice that is ready (and not expired) without asking; it costs again')
+      .option('--dry-run', `${DRY_RUN_HELP} (a local sample is still uploaded, which is free)`),
+  )
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia voices create "My voice" sample.m4a --consent --dry-run
+  $ aitopia voices create "My voice" sample.m4a --consent -o previews/
+  $ aitopia voices create "Narrator" https://cdn.aitopia.ai/.../take3.mp3 --consent --language English
+  $ aitopia voices create "My voice" --consent        # re-create an expired voice
+
+--consent is required: it confirms the recording is your own voice, or that the
+speaker gave you permission to clone it. Never clone anyone else (no celebrities or
+public figures), and never use a voice to impersonate or deceive.
+Best sample: 30-60 s of one speaker in a quiet room, no music.
+The preview clip is saved (or printed with --no-download). Speak one line with the
+voice soon: a cloned voice never used for speech is removed by the provider after
+about 7 days. Without a sample, <name> must be one of your voices: one still being
+created is finished (not charged again); one that may have expired is re-created
+from its stored sample (${VOICE_CLONE_CREDITS} credits). Re-creating a voice that is ready asks
+first (--yes in scripts; answering no exits 1, nothing charged).`,
+    )
+    .action(action((g, name, sample, opts) => voicesCreateCommand(createContext(g), name as string, sample as string | undefined, opts as Parameters<typeof voicesCreateCommand>[3])));
+
+  voices
+    .command('delete')
+    .description('delete one of your voices')
+    .argument('<voice>', 'voice name or id')
+    .option('-y, --yes', 'do not ask for confirmation (needed when there is no terminal, e.g. in scripts or with --json)')
+    .option('--force', 'also delete a voice that is still being created (that clone is lost)')
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia voices delete "Old take"
+  $ aitopia voices delete 60307754-60d1-430a-b98e-128ae5278ec9 --yes
+
+Asks before deleting (answering no exits 1: "Not deleted"; without a terminal, add --yes).
+The voice provider's own copy cannot be deleted from AITOPIA and may remain until it expires.`,
+    )
+    .action(action((g, voice, opts) => voicesDeleteCommand(createContext(g), voice as string, opts as { yes?: boolean; force?: boolean })));
 
   program
     .command('upload')
@@ -200,7 +490,7 @@ over --max-credits (the plan and total are shown, nothing ran), 5 outcome unknow
     .option('--q <text>', 'filter by name or description')
     .action(action((g, opts) => toolsCommand(createContext(g), opts as { q?: string })));
 
-  addDeliveryOptions(
+  const batch = addDeliveryOptions(
     program
       .command('batch')
       .description('make up to 12 images, videos and audio clips in one go, from a JSON file')
@@ -216,9 +506,11 @@ Each item: {"kind": "image" | "audio" | "video", "prompt": "...", "modelId": "..
 Local files in URL fields of "input" (image_url, start_image_url, image_urls, ...) are
 uploaded first; relative paths are read from the batch file's folder.
 Files are saved in -o <dir> as <assetName or prompt>-<item number>.<ext>.
+--project / --folder apply to every item.
 Exit: 0 all finished, 1 some failed (the rest are still saved), 5 some still running.`,
       ),
-  ).action(action((g, file, opts) => batchCommand(createContext(g), file as string, opts as Parameters<typeof batchCommand>[2])));
+  );
+  addScopeOptions(batch).action(action((g, file, opts) => batchCommand(createContext(g), file as string, opts as Parameters<typeof batchCommand>[2])));
 
   addDeliveryOptions(
     program

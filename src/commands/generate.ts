@@ -4,6 +4,7 @@ import { failureToError } from '../errors.js';
 import { isFailed, type ToolOutcome } from '../envelope.js';
 import { inFlight } from '../interrupt.js';
 import type { CallOptions, Session } from '../mcp.js';
+import type { ScopeOptions } from '../resolve.js';
 import { deliver, deliverEstimate, settle, startActivity, type DeliverOptions } from '../results.js';
 import {
   ASPECT_FIELDS,
@@ -16,7 +17,7 @@ import {
   type ModelSchema,
 } from '../schema.js';
 
-export interface GenerateOptions extends DeliverOptions {
+export interface GenerateOptions extends DeliverOptions, ScopeOptions {
   model?: string;
   name?: string;
   set?: string[];
@@ -120,13 +121,15 @@ export async function runGeneration(
   callOptions?: CallOptions,
 ): Promise<ToolOutcome> {
   const flags = options.dryRun ? { ...extra, dryRun: true } : extra;
-  let modelId = options.model ?? (await chooseModel(session, kind));
+  // A saved voice brings its own speech model.
+  const voice = typeof extra.voiceId === 'string';
+  let modelId = options.model ?? (voice ? undefined : await chooseModel(session, kind));
   if (modelId && !options.model) announceModel(ctx, modelId);
   const input = await buildInput(session, modelId, options);
   const first = await paidCall(options.dryRun, () =>
     session.callTool(tool, generationArgs(prompt, options, modelId, input, flags), { ...callOptions, paid: !options.dryRun }),
   );
-  const suggestion = options.model ? undefined : suggestedModel(first);
+  const suggestion = options.model || voice ? undefined : suggestedModel(first);
   if (!suggestion || suggestion === modelId) return first;
   modelId = suggestion;
   announceModel(ctx, modelId);

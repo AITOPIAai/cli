@@ -2,6 +2,7 @@ import { joinWords, parseSetPairs } from '../args.js';
 import { withSession, type Context } from '../context.js';
 import { CliError, UsageError } from '../errors.js';
 import { allowHttpLoopback, deliver, deliverEstimate, settle, startActivity } from '../results.js';
+import { checkScopeOptions, resolveScope } from '../resolve.js';
 import { buildVideoInput, findImageField } from '../schema.js';
 import { assertLocalFile, isRemoteUrl, uploadSource } from '../upload.js';
 import { announceModel, chooseModel, fetchSchema, paidCall, type GenerateOptions } from './generate.js';
@@ -19,9 +20,12 @@ export async function videoCommand(ctx: Context, words: string[], options: Video
   const prompt = joinWords(words);
   if (!prompt) throw new UsageError('A prompt is required, e.g. aitopia video "waves at sunset, slow pan".');
   const sets = parseSetPairs(options.set);
+  checkScopeOptions(options);
   const { out } = ctx;
 
   await withSession(ctx, async (session) => {
+    // Before anything else: a project that does not exist stops here.
+    const scope = await resolveScope(ctx, session, options);
     const kind = options.image !== undefined ? 'image-to-video' : 'text-to-video';
     const modelId = options.model ?? (await chooseModel(session, kind));
     if (!modelId) {
@@ -52,7 +56,7 @@ export async function videoCommand(ctx: Context, words: string[], options: Video
     }
 
     const input = buildVideoInput(schema, { modelId, prompt, duration: options.duration, aspect: options.aspect, imageUrl, sets });
-    const args: Record<string, unknown> = { modelId, input };
+    const args: Record<string, unknown> = { modelId, input, ...scope };
     if (options.name) args.assetName = options.name;
     if (options.model) args.allowAnyModel = true;
     if (options.dryRun) args.dryRun = true;

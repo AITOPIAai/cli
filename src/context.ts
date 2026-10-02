@@ -16,6 +16,11 @@ export interface Context {
   log?: (line: string) => void;
   /** Opens a session with the stored sign-in (exit 3 if there is none). */
   session(): Promise<Session>;
+  /**
+   * Asks a yes/no question. Undefined when nobody can answer (stdin or stderr
+   * is not a terminal); see confirmAction.
+   */
+  confirm?: (question: string) => Promise<boolean>;
 }
 
 export function createContext(options: GlobalOptions, out?: Output): Context {
