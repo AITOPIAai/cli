@@ -47,7 +47,7 @@ export function parseIntegerOption(name: string, min: number, max: number) {
   };
 }
 
-function parseObjectJson(text: string, source: string): Record<string, unknown> {
+export function parseObjectJson(text: string, source: string): Record<string, unknown> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);

@@ -189,7 +189,7 @@ simply be run again). `--no-wait` returns after the first answer and exits 5
 with the run tokens of the items still going.
 
 Keep your files in projects. `--project` (and `--folder`) on `image`, `video`,
-`audio`, `edit` and `batch` saves new results there; a project or folder is named
+`audio`, `edit`, `batch` and `agent run` saves new results there; a project or folder is named
 by its name (any case) or its id, and is checked before anything is spent:
 
 ```sh
@@ -240,6 +240,29 @@ voice that is ready and not flagged as expired asks first (`--yes` in scripts).
 it (MiniMax speech, so your cloned voices); with another model the CLI prints the
 server's notice that the emotion was not used. MiniMax speech and cloned voices
 also understand inline tags like `(laughs)`, `(sighs)` and `(breath)` in the text.
+
+Run a store agent: ready-made AITOPIA agents for one task each (background
+removal, upscaling, music, product ads, ...):
+
+```sh
+aitopia agents --q "background"                  # id, name, listed price, description
+aitopia agent background-remover                 # description, price, input fields
+aitopia agent run background-remover --set photo=product.jpg --dry-run
+aitopia agent run background-remover --set photo=product.jpg -o cutouts/
+aitopia agent run video-upscaler --set video=clip.mp4 --set target_resolution=2160p
+```
+
+An agent is named by its id or its name (any case; several agents with the same
+name stop with exit 2 and list their ids). `--set field=value` sets one input
+field (fitted to its type) and `--input '{...}'` or `--input @file.json` sets
+many; unknown fields and missing required ones stop the command (exit 2) before
+anything is uploaded or run. A local file given to a file field (shown as
+`file (image)` etc.) is uploaded first; `--dry-run` only checks it and shows the
+price and your balance. Other fields take text: a local file there stops the
+command (exit 2); pass its text, e.g. `--set data="$(cat sales.csv)"`. The listed price is printed before a run,
+long runs are followed to the end, files are saved and text answers printed.
+`--no-wait` prints the run token instead (exit 5); `--project` / `--folder` save
+the result in a project.
 
 Turn speech into subtitles or text (1 credit; a video costs 1 more because its
 sound is extracted first):
@@ -294,6 +317,9 @@ lists the closest current models (`Did you mean: ...`).
 | `aitopia credits` | Show your credit balance |
 | `aitopia models [--type image\|video\|audio\|text] [--q text] [--limit n] [--offset n] [--all]` | List models (`--all` adds models outside the recommended set) |
 | `aitopia model <id>` | Show a model's input fields |
+| `aitopia agents [--q text] [--category c] [--limit n] [--offset n] [--all]` | List store agents (id, name, listed price, description) |
+| `aitopia agent <id\|name>` | Show a store agent's description, price and input fields |
+| `aitopia agent run <id\|name> [--set k=v] [--input json\|@file] [--dry-run] [--no-wait]` | Run a store agent (local files uploaded first, files saved) |
 | `aitopia image <prompt> [--model id] [--aspect r] [-n 1-4] [--set k=v] [--dry-run]` | Generate images |
 | `aitopia video <prompt> [--model id] [--image file\|url] [--duration s] [--aspect r] [--set k=v] [--dry-run]` | Generate a video |
 | `aitopia audio <text> [--model id \| --voice name] [--emotion mood] [--set k=v] [--dry-run]` | Generate speech, music or sound (`--voice`: in one of your cloned voices; `--emotion`: in a mood) |
@@ -315,7 +341,7 @@ lists the closest current models (`Did you mean: ...`).
 | `aitopia tools [--q text]` | List the tools available to you |
 | `aitopia status <runToken...> [--wait]` | Check or wait for long runs (up to 12 tokens) |
 
-`image`, `video`, `audio`, `edit` and `batch` also take `--project <name|id>`
+`image`, `video`, `audio`, `edit`, `batch` and `agent run` also take `--project <name|id>`
 and `--folder <name|id>` (save the result there).
 
 Commands that produce files also take:

@@ -8,6 +8,7 @@ import { CliError, EXIT, toCliError } from './errors.js';
 import { installInterruptHandler } from './interrupt.js';
 import { Output } from './output.js';
 import { VERSION } from './version.js';
+import { agentRunCommand, agentShowCommand, agentsCommand, AGENTS_PAGE_SIZE } from './commands/agents.js';
 import { audioCommand, EMOTIONS } from './commands/audio.js';
 import { batchCommand } from './commands/batch.js';
 import { creditsCommand } from './commands/credits.js';
@@ -74,6 +75,8 @@ Examples:
   $ aitopia voices create "My voice" sample.m4a --consent
   $ aitopia audio "Thanks for watching." --voice "My voice"
   $ aitopia transcribe interview.mp4 -o interview.srt
+  $ aitopia agents --q "background"
+  $ aitopia agent run background-remover --set photo=product.jpg
   $ aitopia video "slow pan over a harbor" --duration 10 --dry-run
   $ aitopia batch shots.json -o shots/
   $ aitopia status <runToken> <runToken> --wait
@@ -137,6 +140,102 @@ export function buildProgram(): Command {
     .description("show a model's input fields")
     .argument('<id>', 'model id from `aitopia models`')
     .action(action((g, id) => modelCommand(createContext(g), id as string)));
+
+  program
+    .command('agents')
+    .description('list store agents: ready-made AITOPIA agents for one task each (id, name, price, what it does)')
+    .option('--q <text>', 'search by name, description or category')
+    .option('--category <name>', 'only this category, e.g. higgsfield-video')
+    .option('--limit <n>', `how many to show (1-100, default ${AGENTS_PAGE_SIZE})`, parseIntegerOption('--limit', 1, 100))
+    .option('--offset <n>', 'skip this many (paging)', parseIntegerOption('--offset', 0, 100_000))
+    .option('--all', 'show every match at once (no paging)')
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia agents
+  $ aitopia agents --q "background remover"
+  $ aitopia agents --category higgsfield-video --limit 10 --offset 10
+  $ aitopia agents --all --json | jq -r '.agents[].id'
+
+CREDITS is the agent's listed price (a range when it depends on the input).
+Listing is free. See an agent's fields with \`aitopia agent <id>\`, run it with
+\`aitopia agent run <id>\`.`,
+    )
+    .action(action((g, opts) => agentsCommand(createContext(g), opts as Parameters<typeof agentsCommand>[1])));
+
+  const agent = program
+    .command('agent')
+    .usage('[show] <agent> | run <agent> [options]')
+    .description("show a store agent's price and input fields (`aitopia agent <id|name>`), or run it (`aitopia agent run`)")
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia agent background-remover
+  $ aitopia agent "Music Generator Pro 2"
+  $ aitopia agent run background-remover --set photo=product.jpg --dry-run
+  $ aitopia agent run music-generator --set songIdea="a summer road trip" --set genre=Rock
+
+An agent is named by its id or its name (any case); when several agents share
+the name, the command stops (exit 2) and lists their ids. Find agents with
+\`aitopia agents --q <words>\`.`,
+    );
+
+  agent
+    .command('show', { isDefault: true })
+    .description("show a store agent's description, price and input fields (required ones marked *)")
+    .argument('<agent>', 'agent id or name from `aitopia agents`')
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia agent background-remover
+  $ aitopia agent show video-upscaler
+  $ aitopia agent "music generator pro 2"
+  $ aitopia agent video-upscaler --json | jq '.input.required'
+
+File fields (images, videos, audio) are shown as "file (image)": give them a local
+file (uploaded first) or an https URL. Free; nothing is run.`,
+    )
+    .action(action((g, ref) => agentShowCommand(createContext(g), ref as string)));
+
+  const agentRun = addDeliveryOptions(
+    agent
+      .command('run')
+      .description('run a store agent: uploads local files, shows the price, follows the run and saves its files')
+      .argument('<agent>', 'agent id or name from `aitopia agents`')
+      .option('--set <key=value>', 'one input field (repeatable; fitted to the field type; a local file for a file field is uploaded first)', collect)
+      .option('--input <json|@file>', 'all input fields as a JSON object, or @file.json (@- for stdin); --set wins over it')
+      .option('--name <name>', 'name for the saved asset')
+      .option('--dry-run', `${DRY_RUN_HELP} (local files are checked, not uploaded)`)
+      .option('--wait', 'wait until the agent finishes and download its files (default)')
+      .option('--no-wait', 'return once the run is started, with its run token (exit 5)'),
+  )
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia agent run background-remover --set photo=product.jpg --dry-run
+  $ aitopia agent run background-remover --set photo=product.jpg -o cutouts/
+  $ aitopia agent run video-upscaler --set video=clip.mp4 --set target_resolution=2160p --no-wait
+  $ aitopia agent run smart-data-analyzer --input @analysis.json --project "Q3 report"
+
+See an agent's fields first with \`aitopia agent <id>\`. --set values are read as
+JSON when they parse, then fitted to the field type ("5" for a number field is 5).
+Unknown fields and missing required ones stop the command (exit 2) before anything
+is uploaded or run. A local path given to a file field (shown as "file (image)"
+etc. by \`aitopia agent <id>\`) is uploaded first; with --dry-run it is only
+checked. Other fields take text: a local file there stops the command (exit 2);
+pass its text instead, e.g. --set data="$(cat sales.csv)".
+The listed price is printed before the run; --dry-run shows the price and your
+balance. Long runs are followed until they finish; files are saved (-o), text
+answers are printed. --no-wait prints the run token: check it later with
+\`aitopia status <runToken> --wait\`.
+Exit: 0 done, 1 failed, 2 usage, 4 not enough credits, 5 still running (--no-wait)
+or outcome unknown.`,
+    );
+  addScopeOptions(agentRun).action(action((g, ref, opts) => agentRunCommand(createContext(g), ref as string, opts as Parameters<typeof agentRunCommand>[2])));
 
   const image = addDeliveryOptions(
     program
@@ -272,7 +371,7 @@ Examples:
 
 A project or folder is named by its name (any case) or its id. Projects and folders
 are free; files stay in your AITOPIA Creations also when a project is deleted.
---project / --folder on image, video, audio, edit and batch save new results there.`,
+--project / --folder on image, video, audio, edit, batch and agent run save new results there.`,
     );
 
   projects

@@ -33,6 +33,7 @@ import {
 } from '../src/commands/projects.js';
 import { voicesCreateCommand, voicesDeleteCommand, voicesListCommand } from '../src/commands/voices.js';
 import { transcribeCommand } from '../src/commands/transcribe.js';
+import { agentRunCommand, agentShowCommand, agentsCommand, DRY_RUN_FILE_URL } from '../src/commands/agents.js';
 import { matchNamed } from '../src/resolve.js';
 import { buildSrt, cuesFromWords, cuesOf, normalizeLanguage, splitSegment, sttModelFor, wrapCue } from '../src/transcript.js';
 
@@ -458,9 +459,86 @@ function newTools(name: string, args: Record<string, unknown>) {
       }
       return undefined;
     }
+    case 'list_store_agents': {
+      const q = typeof args.q === 'string' ? args.q.toLowerCase() : '';
+      const list = STORE_AGENTS.filter((a) => !q || [a.name, a.description, a.category].some((t) => String(t).toLowerCase().includes(q)));
+      return ok({ totalAvailable: list.length, returned: list.length, agents: list });
+    }
+    case 'get_store_agent_schema': {
+      const input = AGENT_SCHEMAS[String(args.agentId)];
+      if (!input) return fail({ code: 'FAILED', error: 'Agent implementation not registered yet' });
+      return ok({ agentId: args.agentId, input, output: { type: 'object', properties: { success: { type: 'boolean' }, output: { type: 'object' } } }, files: [] });
+    }
+    case 'run_store_agent':
+      return runStoreAgent(args);
     default:
       return undefined;
   }
+}
+
+// list_store_agents / get_store_agent_schema / run_store_agent
+// (marketplace-tool-executor.ts): x-uap widgets mark file fields; dryRun is the
+// listed price; async agents answer a runToken polled with get_run_status.
+const STORE_AGENTS = [
+  { id: 'background-remover', name: 'Background Remover Pro', description: 'Upload any photo and get it back with the background removed.', category: 'higgsfield-image', async: false, estimatedDuration: { min: 0, max: 32 }, creditsEstimated: { min: 1, max: 1 }, modelChoices: [] },
+  { id: 'video-upscaler', name: 'Video Upscaler (SeedVR2)', description: 'Upscale and enhance your videos.', category: 'higgsfield-video', async: true, estimatedDuration: { min: 0, max: 461 }, creditsEstimated: { min: 40, max: 40 }, modelChoices: [] },
+  { id: 'smart-data-analyzer', name: 'Smart Data Analyzer', description: 'AI-powered data analysis.', category: 'analytics', async: true, estimatedDuration: { min: 5, max: 60 }, creditsEstimated: { min: 1, max: 5 }, modelChoices: [] },
+  { id: 'image-generator', name: 'Image Generator', description: 'Images from text.', category: 'higgsfield-image', async: true, creditsEstimated: { min: 2, max: 2 }, modelChoices: [] },
+  { id: 'viral-image-studio', name: 'Image Generator', description: 'Viral images.', category: 'higgsfield-image', async: false, creditsEstimated: { min: 3, max: 3 }, modelChoices: [] },
+];
+const AGENT_SCHEMAS: Record<string, Record<string, unknown>> = {
+  'background-remover': {
+    type: 'object',
+    properties: { photo: { type: 'string', title: 'Your Photo', description: 'Upload the image whose background you want to remove.', 'x-uap': { ui_component: 'file-upload', widget: 'media', mediaKind: 'image' } } },
+    required: ['photo'],
+  },
+  'video-upscaler': {
+    type: 'object',
+    properties: {
+      video: { type: 'string', title: 'Source Video', 'x-uap': { ui_component: 'file-upload', widget: 'media', mediaKind: 'video' } },
+      target_resolution: { type: 'string', default: '1080p', enum: ['720p', '1080p', '1440p', '2160p'], 'x-uap': { widget: 'select' } },
+      noise_scale: { type: 'number', default: 0.1, minimum: 0, maximum: 1 },
+    },
+    required: ['video'],
+  },
+  'image-generator': { type: 'object', properties: { prompt: { type: 'string' } }, required: ['prompt'] },
+  'smart-data-analyzer': {
+    type: 'object',
+    properties: {
+      data: { type: 'string', description: 'CSV data or JSON array as string', 'x-uap': { widget: 'textarea' } },
+      format: { type: 'string', enum: ['csv', 'json'], default: 'csv' },
+      hasHeaders: { type: 'boolean', default: true },
+      rows: { type: 'integer' },
+      notes: {},
+      logo: { type: 'string', format: 'uri', description: 'Your logo image.' },
+      website: { type: 'string', format: 'uri', description: 'Your web page.' },
+    },
+    required: ['data', 'format'],
+  },
+};
+
+function runStoreAgent(args: Record<string, unknown>) {
+  const agent = STORE_AGENTS.find((a) => a.id === args.agentId);
+  if (!agent) return fail({ code: 'NOT_FOUND', error: `There is no store agent with the id "${String(args.agentId)}".`, agentId: args.agentId, retryable: false, hint: 'Call list_store_agents and use an id it returns.' });
+  if (args.dryRun === true) {
+    const { min, max } = agent.creditsEstimated;
+    return ok({ status: 'estimate', credits: max, basis: `The listed price for this agent: ${max} credit${max === 1 ? '' : 's'}.`, agentId: agent.id, breakdown: { minCredits: min, maxCredits: max }, balance: { creditsForGeneration: balance }, affordable: balance >= max, note: 'Estimate only: nothing was submitted, reserved or charged.' });
+  }
+  const input = (args.input ?? {}) as Record<string, unknown>;
+  if (agent.id === 'background-remover') {
+    if (typeof input.photo !== 'string' || !input.photo.startsWith('https://')) {
+      return fail({ code: 'INVALID_INPUT', error: 'photo must be an https URL.', agentId: agent.id, retryable: false, owner: 'caller' });
+    }
+    return ok({ status: 'completed', state: 'completed', agentId: agent.id, jobId: 'aj-1', progress: 100, assetUrl: `${base}/files/cutout.png`, creationUrl: 'https://aitopia.ai/creations/a1', output: { url: `${base}/files/cutout.png` }, openInAitopia: 'https://aitopia.ai/c/a1' });
+  }
+  if (agent.id === 'smart-data-analyzer') {
+    return ok({ status: 'completed', state: 'completed', agentId: agent.id, jobId: 'aj-2', progress: 100, assetId: null, assetUrl: null, output: { summary: { rowCount: 2, columnCount: 2 } } });
+  }
+  runStates['agent-1'] ??= [
+    { status: 'running', agentId: agent.id, progress: 40, pollAfterMs: 2000 },
+    { status: 'completed', agentId: agent.id, jobId: 'aj-3', progress: 100, assetUrl: `${base}/files/upscaled.mp4`, creationUrl: 'https://aitopia.ai/creations/a3', output: {}, openInAitopia: 'https://aitopia.ai/c/a3' },
+  ];
+  return ok({ status: 'running', agentId: agent.id, runToken: 'agent-1', pollAfterMs: 2000, poll: 'Call get_run_status with this runToken until status is completed or failed.' });
 }
 
 function tool(name: string, args: Record<string, unknown>) {
@@ -1981,6 +2059,10 @@ describe('new error code hints', () => {
     ['PROJECTS_UNAVAILABLE', 'Creations'],
     ['NAME_CONFLICT', 'another name'],
     ['MODEL_DISABLED', 'aitopia models'],
+    ['AGENT_NOT_FOUND', 'aitopia agents --q'],
+    ['UPSTREAM_RUN_FAILED', 'try again later'],
+    ['QUEUE_LIMIT_EXCEEDED', 'aitopia status'],
+    ['INPUT_TOO_LARGE', 'uploaded first'],
   ])('%s', (code, wording) => {
     const error = failureToError({ code, error: 'Server text.', hint: 'Call create_voice with {voiceId}.' });
     expect(error.code).toBe(code);
@@ -2116,5 +2198,199 @@ describe('review fixes: voices, transcribe, cues', () => {
     const w = (text: string, start: number, end: number) => ({ text, start, end });
     expect(buildSrt([w('a', 1, 1), w('b', 1.2, 1.5)])).toContain('00:00:01,000 --> 00:00:01,200');
     expect(buildSrt([w('a', 1, 1), w('b', 3, 3.5)])).toContain('00:00:01,000 --> 00:00:01,500');
+  });
+});
+
+describe('store agents', () => {
+  it('agents lists id, name, listed price and description, pages locally and passes --q', async () => {
+    await agentsCommand(ctx(), { limit: 2 });
+    expect(calls[0]).toMatchObject({ name: 'list_store_agents', args: {} });
+    expect(stdout.text).toMatch(/background-remover\s+Background Remover Pro\s+1 credit\s+Upload any photo/);
+    expect(stdout.text).toMatch(/video-upscaler\s+Video Upscaler \(SeedVR2\)\s+40 credits/);
+    expect(stdout.text).not.toContain('smart-data-analyzer');
+    expect(stderr.text).toContain('Showing 2 of 5. Next page: --offset 2');
+    await agentsCommand(ctx(), { offset: 2, limit: 1 });
+    expect(stdout.text).toMatch(/smart-data-analyzer\s+Smart Data Analyzer\s+1-5 credits/);
+    calls = [];
+    await agentsCommand(ctx(true), { q: 'video' });
+    expect(calls[0]?.args).toEqual({ q: 'video' });
+    const json = JSON.parse(stdout.text) as Record<string, unknown>;
+    expect(json).toMatchObject({ returned: 1, total: 1, offset: 0 });
+    expect(json.nextOffset).toBeUndefined();
+    await agentsCommand(ctx(), { all: true, limit: 1 });
+    expect(stdout.text).toContain('viral-image-studio');
+    expect(stderr.text).not.toContain('Next page');
+  });
+
+  it('agent shows the description, price and fields: file fields, required marks, enums and defaults', async () => {
+    await agentShowCommand(ctx(), 'video-upscaler');
+    expect(names()).toEqual(['list_store_agents', 'get_store_agent_schema']);
+    expect(calls[1]?.args).toEqual({ agentId: 'video-upscaler' });
+    expect(stdout.text).toContain('Video Upscaler (SeedVR2) (video-upscaler)');
+    expect(stdout.text).toContain('Price: 40 credits');
+    expect(stdout.text).toContain('Takes: up to 8 min (runs in the background)');
+    expect(stdout.text).toContain('video*  file (video), required');
+    expect(stdout.text).toContain('Source Video');
+    expect(stdout.text).toContain('target_resolution  string, default "1080p"');
+    expect(stdout.text).toContain('one of: "720p", "1080p", "1440p", "2160p"');
+    expect(stdout.text).toContain('Run it with: aitopia agent run video-upscaler --set video=<file> --dry-run');
+    await agentShowCommand(ctx(true), 'video-upscaler');
+    expect(JSON.parse(stdout.text)).toMatchObject({ agent: { id: 'video-upscaler' }, input: { required: ['video'] } });
+  });
+
+  it('a name resolves by exact id, then by name in any case; equal names are ambiguous (exit 2); unknown exits 1', async () => {
+    await agentShowCommand(ctx(), 'smart DATA analyzer');
+    expect(calls[1]?.args).toEqual({ agentId: 'smart-data-analyzer' });
+    calls = [];
+    await agentShowCommand(ctx(), 'image-generator');
+    expect(calls[1]?.args).toEqual({ agentId: 'image-generator' });
+    calls = [];
+    const ambiguous = await failure(agentShowCommand(ctx(), 'image generator'));
+    expect(ambiguous?.exitCode).toBe(2);
+    expect(ambiguous?.code).toBe('AMBIGUOUS_NAME');
+    expect(ambiguous?.hint).toContain('image-generator (Image Generator), viral-image-studio (Image Generator)');
+    const missing = await failure(agentShowCommand(ctx(), 'remover'));
+    expect(missing?.exitCode).toBe(1);
+    expect(missing?.code).toBe('AGENT_NOT_FOUND');
+    expect(missing?.hint).toContain('aitopia agents --q');
+    expect(missing?.notes.join(' ')).toContain('background-remover (Background Remover Pro)');
+    expect(names()).not.toContain('get_store_agent_schema');
+  });
+
+  it('run fits --set values to the field types and prints a text answer', async () => {
+    await agentRunCommand(ctx(), 'smart-data-analyzer', { set: ['data=42', 'format=csv', 'hasHeaders=false', 'rows="7"'] });
+    expect(names()).toEqual(['list_store_agents', 'get_store_agent_schema', 'run_store_agent']);
+    expect(calls[2]?.args).toEqual({ agentId: 'smart-data-analyzer', input: { data: '42', format: 'csv', hasHeaders: false, rows: 7 } });
+    expect(stderr.text).toContain('Running Smart Data Analyzer (smart-data-analyzer) · listed price 1-5 credits');
+    expect(stdout.text).toContain('"rowCount": 2');
+  });
+
+  it('--input (JSON or @file) is merged under --set; a required field with a default is filled in', async () => {
+    const file = join(dir, 'input.json');
+    writeFileSync(file, JSON.stringify({ data: 'a,b\n1,2', hasHeaders: true }));
+    await agentRunCommand(ctx(), 'smart-data-analyzer', { input: `@${file}`, set: ['hasHeaders=false'] });
+    expect(calls.at(-1)?.args).toEqual({ agentId: 'smart-data-analyzer', input: { data: 'a,b\n1,2', hasHeaders: false, format: 'csv' } });
+    await agentRunCommand(ctx(), 'smart-data-analyzer', { input: '{"data": "x", "format": "json"}' });
+    expect(calls.at(-1)?.args).toMatchObject({ input: { data: 'x', format: 'json' } });
+    const bad = await failure(agentRunCommand(ctx(), 'smart-data-analyzer', { input: '[1]' }));
+    expect(bad?.exitCode).toBe(2);
+  });
+
+  it('a local file for a media field is uploaded first, the result is saved with the Open in AITOPIA link', async () => {
+    const photo = join(dir, 'product.png');
+    writeFileSync(photo, 'png bytes');
+    const out = join(dir, 'cutouts');
+    await agentRunCommand(ctx(), 'background remover pro', { set: [`photo=${photo}`], output: `${out}/` });
+    expect(names()).toEqual(['list_store_agents', 'get_store_agent_schema', 'upload_asset', 'run_store_agent']);
+    expect(calls[3]?.args).toEqual({ agentId: 'background-remover', input: { photo: 'https://cdn.aitopia.ai/uploaded.png' } });
+    expect(stderr.text).toContain(`Uploading ${photo}...`);
+    expect(readdirSync(out)).toHaveLength(1);
+    expect(stdout.text).toContain('Saved');
+    expect(stdout.text).toContain('Open in AITOPIA: https://aitopia.ai/c/a1');
+  });
+
+  it('a local file given to a text or untyped field is refused (exit 2, pass the text); plain text passes', async () => {
+    const sheet = join(dir, 'sales.csv');
+    writeFileSync(sheet, 'a,b\n1,2');
+    const text = await failure(agentRunCommand(ctx(), 'smart-data-analyzer', { set: [`data=${sheet}`] }));
+    expect(text?.exitCode).toBe(2);
+    expect(text?.message).toContain('The field "data" of store agent smart-data-analyzer takes text, not a file');
+    expect(text?.hint).toContain(`--set data="$(cat ${sheet})"`);
+    const untyped = await failure(agentRunCommand(ctx(), 'smart-data-analyzer', { set: ['data=x', `notes=${sheet}`] }));
+    expect(untyped?.exitCode).toBe(2);
+    expect(untyped?.message).toContain('The field "notes"');
+    expect(names()).not.toContain('upload_asset');
+    expect(names()).not.toContain('run_store_agent');
+    await agentRunCommand(ctx(), 'smart-data-analyzer', { set: ['data=report.png'] });
+    expect(calls.at(-1)?.args).toMatchObject({ input: { data: 'report.png' } });
+  });
+
+  it('a URL field described as media takes a local file (uploaded); a plain URL field does not', async () => {
+    const pic = join(dir, 'logo.png');
+    writeFileSync(pic, 'png');
+    await agentRunCommand(ctx(), 'smart-data-analyzer', { set: ['data=x', `logo=${pic}`], dryRun: true });
+    expect(calls.at(-1)?.args).toMatchObject({ input: { logo: DRY_RUN_FILE_URL } });
+    const page = await failure(agentRunCommand(ctx(), 'smart-data-analyzer', { set: ['data=x', `website=${pic}`] }));
+    expect(page?.exitCode).toBe(2);
+  });
+
+  it('--dry-run checks the local file but uploads nothing and runs nothing: only the price is shown', async () => {
+    const photo = join(dir, 'product.png');
+    writeFileSync(photo, 'png bytes');
+    await agentRunCommand(ctx(), 'background-remover', { set: [`photo=${photo}`], dryRun: true });
+    expect(names()).toEqual(['list_store_agents', 'get_store_agent_schema', 'run_store_agent']);
+    expect(calls[2]?.args).toEqual({ agentId: 'background-remover', input: { photo: DRY_RUN_FILE_URL }, dryRun: true });
+    expect(stdout.text).toContain('Estimate: 1 credit');
+    expect(stdout.text).toContain('Nothing was submitted or charged.');
+    const missingFile = await failure(agentRunCommand(ctx(), 'background-remover', { set: [`photo=${join(dir, 'nope.png')}`], dryRun: true }));
+    expect(missingFile?.exitCode).toBe(2);
+    expect(names()).not.toContain('upload_asset');
+  });
+
+  it('missing required fields and unknown fields stop before any upload or run (exit 2)', async () => {
+    const missing = await failure(agentRunCommand(ctx(), 'background-remover', {}));
+    expect(missing?.exitCode).toBe(2);
+    expect(missing?.message).toBe('Store agent background-remover needs the field "photo".');
+    expect(missing?.hint).toContain('--set photo=<file>');
+    const unknown = await failure(agentRunCommand(ctx(), 'smart-data-analyzer', { set: ['data=x', 'colour=red'] }));
+    expect(unknown?.exitCode).toBe(2);
+    expect(unknown?.message).toContain('has no field "colour"');
+    expect(names()).toEqual(['list_store_agents', 'get_store_agent_schema', 'list_store_agents', 'get_store_agent_schema']);
+    calls = [];
+    // A bad --set or --input is found before connecting at all.
+    expect((await failure(agentRunCommand(ctx(), 'background-remover', { set: ['nokey'] })))?.exitCode).toBe(2);
+    expect((await failure(agentRunCommand(ctx(), 'background-remover', { input: '{oops' })))?.exitCode).toBe(2);
+    expect((await failure(agentRunCommand(ctx(), 'background-remover', { folder: 'Banners' })))?.exitCode).toBe(2);
+    expect(calls).toEqual([]);
+  });
+
+  it('a long run is followed with its runToken to the end and its file downloaded', async () => {
+    const out = join(dir, 'up');
+    await agentRunCommand(ctx(), 'video-upscaler', { set: ['video=https://example.com/clip.mp4', 'target_resolution=2160p'], output: `${out}/` });
+    expect(names()).toEqual(['list_store_agents', 'get_store_agent_schema', 'run_store_agent', 'get_run_status', 'get_run_status']);
+    expect(calls[2]?.args).toEqual({ agentId: 'video-upscaler', input: { video: 'https://example.com/clip.mp4', target_resolution: '2160p' } });
+    expect(calls[3]?.args).toMatchObject({ runToken: 'agent-1' });
+    expect(readdirSync(out)).toHaveLength(1);
+    expect(stdout.text).toContain('Open in AITOPIA: https://aitopia.ai/c/a3');
+  }, 15_000);
+
+  it('--no-wait returns the run token (exit 5) without polling', async () => {
+    const error = await failure(agentRunCommand(ctx(), 'video-upscaler', { set: ['video=https://example.com/clip.mp4'], wait: false }));
+    expect(error?.exitCode).toBe(5);
+    expect(error?.code).toBe('RUNNING');
+    expect(error?.notes).toContain('Check it with: aitopia status agent-1 --wait');
+    expect(names()).not.toContain('get_run_status');
+  });
+
+  it('--project and --folder are resolved before the run and passed as projectId / folderId', async () => {
+    await agentRunCommand(ctx(), 'smart-data-analyzer', { set: ['data=x'], project: 'spring campaign', folder: 'banners' });
+    expect(names()).toEqual(['list_store_agents', 'get_store_agent_schema', 'list_projects', 'list_projects', 'list_project_assets', 'run_store_agent']);
+    expect(calls.at(-1)?.args).toEqual({ agentId: 'smart-data-analyzer', input: { data: 'x', format: 'csv' }, projectId: 'p-4444', folderId: 'f-1' });
+    calls = [];
+    const missing = await failure(agentRunCommand(ctx(), 'smart-data-analyzer', { set: ['data=x'], project: 'Nope' }));
+    expect(missing?.code).toBe('PROJECT_NOT_FOUND');
+    expect(names()).not.toContain('run_store_agent');
+  });
+
+  it('a refused input names the agent in the hint; a non-URL value of a file field must be a local file', async () => {
+    const error = await failure(agentRunCommand(ctx(), 'background-remover', { set: ['photo=http://example.com/x.png'] }));
+    expect(error?.code).toBe('INVALID_INPUT');
+    expect(error?.exitCode).toBe(1);
+    expect(error?.hint).toContain('aitopia agent background-remover');
+    const notFile = await failure(agentRunCommand(ctx(), 'background-remover', { set: ['photo=no-such-thing'] }));
+    expect(notFile?.exitCode).toBe(2);
+    const notFound = failureToError({ status: 'failed', code: 'NOT_FOUND', error: 'There is no store agent with the id "x".', agentId: 'x', hint: 'Call list_store_agents and use an id it returns.' });
+    expect(notFound.hint).toContain('aitopia agents');
+    expect(notFound.hint).not.toContain('list_store_agents');
+  });
+
+  it('`aitopia agent <id>` routes to show and `aitopia agent run <id>` to run', async () => {
+    const program = buildProgram();
+    program.configureOutput({ writeErr: () => undefined, writeOut: () => undefined });
+    const shown = await program.parseAsync(['node', 'aitopia', 'agent', 'no-such-agent', '--server', `${base}/mcp`]).catch((e: unknown) => e as CliError);
+    expect((shown as CliError).code).toBe('AGENT_NOT_FOUND');
+    expect(names()).toEqual(['list_store_agents']);
+    const run = await buildProgram().parseAsync(['node', 'aitopia', 'agent', 'run', 'background-remover', '--server', `${base}/mcp`]).catch((e: unknown) => e as CliError);
+    expect((run as CliError).message).toContain('needs the field "photo"');
   });
 });

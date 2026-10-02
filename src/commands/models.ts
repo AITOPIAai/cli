@@ -61,8 +61,9 @@ export async function modelsCommand(ctx: Context, options: ModelsOptions): Promi
   });
 }
 
-function describeField(name: string, field: Record<string, unknown>, required: boolean): string[] {
-  const type = Array.isArray(field.type) ? field.type.join('|') : str(field.type) || 'any';
+/** Lines describing one input field; `typeLabel` replaces the schema type (e.g. "file (image)"). */
+export function describeField(name: string, field: Record<string, unknown>, required: boolean, typeLabel?: string): string[] {
+  const type = typeLabel ?? (Array.isArray(field.type) ? field.type.join('|') : str(field.type) || 'any');
   const bits = [type];
   if (required) bits.push('required');
   if (field.default !== undefined) bits.push(`default ${JSON.stringify(field.default)}`);

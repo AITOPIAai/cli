@@ -157,7 +157,9 @@ export function failureToError(payload: FailurePayload, opts: { buyCreditsUrl?: 
     if (suggestions.length > 0) notes.push(`Did you mean: ${suggestions.join(', ')}`);
     return new CliError(message, exitCode, { code, hint: modelHint(code, payload), notes, data });
   }
-  const fixedHint = CODE_HINTS[code] ?? (isRunTokenNotFound(code, message) ? CODE_HINTS.INVALID_RUN_TOKEN : undefined);
+  const agentId = detailString(payload, 'agentId');
+  const agentHint = agentId ? AGENT_HINTS[code]?.replace('<id>', agentId) : undefined;
+  const fixedHint = agentHint ?? CODE_HINTS[code] ?? (isRunTokenNotFound(code, message) ? CODE_HINTS.INVALID_RUN_TOKEN : undefined);
   if (fixedHint) {
     const open = opts.openInAitopia ?? detailString(payload, 'openInAitopia');
     if (open) notes.push(`Open in AITOPIA: ${open}`);
@@ -208,6 +210,17 @@ const CODE_HINTS: Record<string, string> = {
   FOLDER_NOT_FOUND: 'See the folders of a project with `aitopia projects show <project>`. Nothing was spent.',
   PROJECTS_UNAVAILABLE: 'Projects are not available right now. Results are still saved in your AITOPIA Creations; try again later.',
   NAME_CONFLICT: 'That name is already taken here. Pick another name.',
+  // Store agents and model runs
+  AGENT_NOT_FOUND: 'Search the store agents with `aitopia agents --q <words>` and use an id it shows. Nothing was spent.',
+  UPSTREAM_RUN_FAILED: 'The run failed at the provider. It may work if you try again later.',
+  QUEUE_LIMIT_EXCEEDED: 'You have too many runs going at once. Wait for one to finish (`aitopia status <runToken> --wait`), then try again.',
+  INPUT_TOO_LARGE: 'The input is too large. Give big content as a file (a local path is uploaded first) or a URL instead of inline text.',
+};
+
+/** CLI wording for codes of a store-agent call (the payload names its agentId); <id> is filled in. */
+const AGENT_HINTS: Record<string, string> = {
+  NOT_FOUND: 'See the store agents with `aitopia agents` (search with --q) and use an id it shows. Nothing was spent.',
+  INVALID_INPUT: 'The agent refused this input. Check its fields with `aitopia agent <id>` and fix the value named above; the same input fails again.',
 };
 
 /** Codes after which running the same thing again is safe (nothing was charged). */
