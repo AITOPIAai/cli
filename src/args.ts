@@ -33,6 +33,17 @@ export function parseSetPairs(pairs: string[] | undefined): Record<string, unkno
   return out;
 }
 
+/** All `--set` pairs with their values exactly as typed (a later key wins). */
+export function parseSetPairsRaw(pairs: string[] | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const pair of pairs ?? []) {
+    parseSetPair(pair); // same validation
+    const eq = pair.indexOf('=');
+    out[pair.slice(0, eq).trim()] = pair.slice(eq + 1);
+  }
+  return out;
+}
+
 /** commander collector for repeatable options. */
 export function collect(value: string, previous: string[] | undefined): string[] {
   return [...(previous ?? []), value];

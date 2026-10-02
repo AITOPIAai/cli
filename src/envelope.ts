@@ -160,11 +160,22 @@ export function urlsIn(value: unknown, depth = OUTPUT_SEARCH_DEPTH, found: strin
  * `assets[]`, then `assetUrl`, then URLs found in `output`, then resource_link
  * blocks that are not the AITOPIA / credits pages.
  */
+// AITOPIA web pages (Creations, a chat) are links to open, never files to
+// download; files live on the CDN.
+function isAppPage(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return /(^|\.)aitopia\.ai$/.test(host) && !host.startsWith('cdn.');
+  } catch {
+    return false;
+  }
+}
+
 export function assetsOf(outcome: ToolOutcome): AssetRef[] {
   const out: AssetRef[] = [];
   const seen = new Set<string>();
   const add = (url: unknown, name?: string) => {
-    if (!isHttpUrl(url) || seen.has(url)) return;
+    if (!isHttpUrl(url) || seen.has(url) || isAppPage(url)) return;
     seen.add(url);
     out.push(name ? { url, name } : { url });
   };

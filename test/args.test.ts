@@ -66,3 +66,17 @@ describe('integer options', () => {
     expect(() => count('two')).toThrow(/whole number/);
   });
 });
+
+describe('store agent text fields keep --set values as typed', () => {
+  it('a string field gets the raw text; other fields are coerced', async () => {
+    const { buildAgentInput } = await import('../src/commands/agents.js');
+    const { parseSetPairs, parseSetPairsRaw } = await import('../src/args.js');
+    const pairs = ['data=[{"a":1}]', 'code=12345678901234567890', 'version=1.0', 'count=5'];
+    const schema = {
+      properties: { data: { type: 'string' }, code: { type: 'string' }, version: { type: 'string' }, count: { type: 'integer' } },
+      required: [],
+    } as never;
+    const input = buildAgentInput('a', schema, {}, parseSetPairs(pairs), parseSetPairsRaw(pairs));
+    expect(input).toEqual({ data: '[{"a":1}]', code: '12345678901234567890', version: '1.0', count: 5 });
+  });
+});

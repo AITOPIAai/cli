@@ -1,5 +1,5 @@
 import { readFileSync, statSync } from 'node:fs';
-import { parseObjectJson, parseSetPairs } from '../args.js';
+import { parseObjectJson, parseSetPairs, parseSetPairsRaw } from '../args.js';
 import { withSession, type Context } from '../context.js';
 import { CliError, EXIT, UsageError, failureToError, formatNumber, statusNotes } from '../errors.js';
 import { assetsOf, isFailed, type ToolOutcome } from '../envelope.js';
@@ -8,7 +8,7 @@ import { renderTable } from '../output.js';
 import { isRunning } from '../poll.js';
 import { checkScopeOptions, matchNamed, resolveScope, type Named, type ScopeOptions } from '../resolve.js';
 import { allowHttpLoopback, creditsText, deliver, deliverEstimate, settle, startActivity, type DeliverOptions } from '../results.js';
-import { coerceValue, fieldNames, schemaFromPayload, type ModelSchema, type SchemaField } from '../schema.js';
+import { coerceValue, fieldNames, primaryType, schemaFromPayload, type ModelSchema, type SchemaField } from '../schema.js';
 import { assertLocalFile, isRemoteUrl, uploadSource } from '../upload.js';
 import { describeField } from './models.js';
 import { paidCall } from './generate.js';
@@ -255,10 +255,16 @@ export function buildAgentInput(
   schema: ModelSchema,
   base: Record<string, unknown>,
   sets: Record<string, unknown>,
+  rawSets: Record<string, string> = {},
 ): Record<string, unknown> {
   const names = fieldNames(schema);
   const input: Record<string, unknown> = { ...base };
-  for (const [key, value] of Object.entries(sets)) input[key] = coerceValue(schema.properties[key], value);
+  for (const [key, value] of Object.entries(sets)) {
+    // A text field takes what was typed, as is: '[1,2]' stays text and
+    // 12345678901234567890 keeps every digit (no JSON round trip).
+    const field = schema.properties[key];
+    input[key] = primaryType(field) === 'string' && key in rawSets ? rawSets[key] : coerceValue(field, value);
+  }
   if (names.length === 0) return input;
   const unknown = Object.keys(input).filter((key) => !names.includes(key));
   if (unknown.length > 0) {
@@ -379,13 +385,14 @@ export async function agentRunCommand(ctx: Context, ref: string, options: AgentR
   // Everything that can be checked offline, before connecting.
   const base = parseInputOption(options.input);
   const sets = parseSetPairs(options.set);
+  const rawSets = parseSetPairsRaw(options.set);
   checkScopeOptions(options);
   const { out } = ctx;
 
   await withSession(ctx, async (session) => {
     const agent = await resolveAgent(session, ref);
     const { schema } = await agentSchema(session, agent.id);
-    const checked = buildAgentInput(agent.id, schema, base, sets);
+    const checked = buildAgentInput(agent.id, schema, base, sets, rawSets);
     checkNoFilesInTextFields(agent.id, schema, checked);
     // A project that does not exist stops here, before any upload.
     const scope = await resolveScope(ctx, session, options);

@@ -33,7 +33,7 @@ export function fieldNames(schema: ModelSchema): string[] {
   return Object.keys(schema.properties);
 }
 
-function primaryType(field: SchemaField | undefined): string | undefined {
+export function primaryType(field: SchemaField | undefined): string | undefined {
   if (!field) return undefined;
   if (Array.isArray(field.type)) return field.type.find((t) => t !== 'null');
   return field.type;

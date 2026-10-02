@@ -103,3 +103,17 @@ describe('assetsOf', () => {
     expect(assetsOf(outcome)).toEqual([]);
   });
 });
+
+describe('assetsOf never downloads AITOPIA web pages', () => {
+  it('skips creations / chat page links and keeps CDN files', async () => {
+    const { assetsOf } = await import('../src/envelope.js');
+    const outcome = {
+      isError: false,
+      payload: { status: 'completed', creationUrl: 'https://aitopia.ai/creations?runId=x', output: { link: 'https://scotty.aitopia.ai/chat/1' } },
+      links: [{ uri: 'https://aitopia.ai/creations?runId=x', name: 'Creation' }],
+    } as never;
+    expect(assetsOf(outcome)).toEqual([]);
+    const withFile = { isError: false, payload: { status: 'completed', assetUrl: 'https://cdn.aitopia.ai/f/x.png' }, links: [] } as never;
+    expect(assetsOf(withFile).map((a: { url: string }) => a.url)).toEqual(['https://cdn.aitopia.ai/f/x.png']);
+  });
+});
