@@ -18,7 +18,7 @@ import { toolsCommand } from '../src/commands/tools.js';
 import { loginCommand } from '../src/commands/login.js';
 import { CliError, failureToError } from '../src/errors.js';
 import { clearReadyResults, reportInterrupt } from '../src/interrupt.js';
-import { jsonStatus } from '../src/cli.js';
+import { buildProgram, jsonStatus } from '../src/cli.js';
 import { batchCommand } from '../src/commands/batch.js';
 import { runCommand } from '../src/commands/run.js';
 import { statusCommand } from '../src/commands/status.js';
@@ -431,12 +431,17 @@ function newTools(name: string, args: Record<string, unknown>) {
       return ok({ status: 'completed', deleted: true, voiceId: args.voiceId });
     }
     case 'generate_audio': {
+      // emotion maps onto MiniMax voice_setting.emotion; other models answer with a note.
+      const emotionNote = args.emotion !== undefined && !args.voiceId ? { note: 'emotion is not supported by this model and was ignored.' } : {};
+      if (args.dryRun === true && args.emotion !== undefined) {
+        return ok({ status: 'estimate', credits: 15, basis: 'The listed price for this model (15 credits).', modelId: 'fal-ai/minimax/speech-2.8-hd', balance: { creditsForGeneration: balance }, affordable: true, note: 'Estimate only: nothing was submitted, reserved or charged.', ...emotionNote });
+      }
       if (args.dryRun === true) return estimate(15, 'The listed price for this model (15 credits).', 'fal-ai/minimax/speech-2.8-hd');
       if (args.voiceId === 'v-1' && String(args.prompt).includes('expired')) {
         return fail({ code: 'VOICE_EXPIRED', error: 'The voice "My voice" is no longer available at the voice provider.', voiceId: 'v-1', recreateCredits: 150, hint: 'Do not retry the speech. Re-create the voice from the stored sample: create_voice with {voiceId: "v-1", consent: true}.' });
       }
       if (!args.voiceId && !args.selectedModelId) return fail({ code: 'MODEL_REQUIRED', error: 'Choose the audio model.', suggestions: [] });
-      return ok({ status: 'completed', assetUrl: `${base}/files/speech.mp3`, assetName: 'Speech', modelId: args.voiceId ? 'fal-ai/minimax/speech-2.8-hd' : args.selectedModelId });
+      return ok({ status: 'completed', assetUrl: `${base}/files/speech.mp3`, assetName: 'Speech', modelId: args.voiceId ? 'fal-ai/minimax/speech-2.8-hd' : args.selectedModelId, ...emotionNote });
     }
     case 'audio_tools': {
       const input = args.input as Record<string, unknown>;
@@ -1823,6 +1828,47 @@ describe('voices', () => {
     expect(missing?.code).toBe('VOICE_NOT_FOUND');
     expect(names()).toEqual(['list_voices']);
     expect((await failure(audioCommand(ctx(), ['hi'], { voice: 'My voice', model: 'x/y' })))?.exitCode).toBe(2);
+  });
+});
+
+describe('audio --emotion', () => {
+  it('sends emotion as a top-level generate_audio argument, with --voice and --project', async () => {
+    const out = join(dir, 'happy');
+    await audioCommand(ctx(), ['We', 'did', 'it!'], { voice: 'My voice', emotion: 'happy', project: 'spring campaign', output: `${out}/` });
+    expect(names()).toEqual(['list_voices', 'list_projects', 'list_projects', 'generate_audio']);
+    expect(calls.at(-1)?.args).toEqual({ prompt: 'We did it!', voiceId: 'v-1', emotion: 'happy', projectId: 'p-4444' });
+    expect(stderr.text).not.toContain('Notice:');
+    expect(readdirSync(out)).toHaveLength(1);
+  });
+
+  it('without --voice: emotion goes with the chosen model, and the server note that it is not supported is printed', async () => {
+    await audioCommand(ctx(), ['Hello'], { model: 'x/tts', emotion: 'calm', output: `${join(dir, 'calm')}/` });
+    expect(calls.at(-1)?.args).toEqual({ prompt: 'Hello', selectedModelId: 'x/tts', allowAnyModel: true, emotion: 'calm' });
+    expect(stderr.text).toContain('Notice: emotion is not supported by this model and was ignored.');
+  });
+
+  it('--dry-run and --json carry emotion; only the emotion note is repeated as a notice', async () => {
+    await audioCommand(ctx(), ['Hello'], { model: 'x/tts', emotion: 'sad', dryRun: true });
+    expect(calls.at(-1)?.args).toEqual({ prompt: 'Hello', selectedModelId: 'x/tts', allowAnyModel: true, emotion: 'sad', dryRun: true });
+    expect(stdout.text).toContain('Estimate: 15 credits');
+    expect(stderr.text).toContain('Notice: emotion is not supported by this model and was ignored.');
+    expect(stderr.text).not.toContain('Estimate only');
+    await audioCommand(ctx(true), ['Hello'], { voice: 'My voice', emotion: 'fluent', dryRun: true });
+    expect(calls.at(-1)?.args).toEqual({ prompt: 'Hello', voiceId: 'v-1', emotion: 'fluent', dryRun: true });
+    expect(JSON.parse(stdout.text)).toMatchObject({ status: 'estimate', credits: 15 });
+    expect(stderr.text).not.toContain('Notice:');
+  });
+
+  it('an emotion outside the list is a usage error (exit 2) and nothing is called', async () => {
+    const error = await failure(audioCommand(ctx(), ['Hello'], { emotion: 'joyful' }));
+    expect(error?.exitCode).toBe(2);
+    expect(error?.message).toContain('happy, sad, angry, fearful, disgusted, surprised, calm, fluent');
+    const program = buildProgram();
+    program.configureOutput({ writeErr: () => undefined, writeOut: () => undefined });
+    for (const sub of program.commands) sub.exitOverride().configureOutput({ writeErr: () => undefined, writeOut: () => undefined });
+    const parsed = await program.parseAsync(['node', 'aitopia', 'audio', 'Hello', '--emotion', 'joyful', '--server', `${base}/mcp`]).catch((e: unknown) => e);
+    expect((parsed as { code?: string }).code).toBe('commander.invalidArgument');
+    expect(calls).toEqual([]);
   });
 });
 

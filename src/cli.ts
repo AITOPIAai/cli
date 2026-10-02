@@ -8,7 +8,7 @@ import { CliError, EXIT, toCliError } from './errors.js';
 import { installInterruptHandler } from './interrupt.js';
 import { Output } from './output.js';
 import { VERSION } from './version.js';
-import { audioCommand } from './commands/audio.js';
+import { audioCommand, EMOTIONS } from './commands/audio.js';
 import { batchCommand } from './commands/batch.js';
 import { creditsCommand } from './commands/credits.js';
 import { editCommand } from './commands/edit.js';
@@ -174,6 +174,7 @@ export function buildProgram(): Command {
       .argument('<prompt...>', 'the text to speak, or a description of the sound')
       .option('--model <id>', 'model id (default: a current AITOPIA audio model, printed on use)')
       .option('--voice <name|id>', 'speak the text in one of your cloned voices (see `aitopia voices`); uses that voice\'s speech model')
+      .addOption(new Option('--emotion <emotion>', 'read the text in this mood (speech models that support it, e.g. your cloned voices)').choices(EMOTIONS))
       .option('--name <name>', 'name for the saved asset')
       .option('--set <key=value>', 'extra model field (repeatable, value parsed as JSON)', collect)
       .option('--dry-run', DRY_RUN_HELP)
@@ -183,12 +184,15 @@ export function buildProgram(): Command {
 Examples:
   $ aitopia audio "Welcome to AITOPIA." -o welcome.mp3
   $ aitopia audio "Thanks for watching, see you next week." --voice "My voice"
+  $ aitopia audio "We did it, the launch is live!" --voice "My voice" --emotion happy
   $ aitopia audio "rain on a tin roof, distant thunder" --model <sound-model-id>
   $ aitopia audio "Our spring range is here." --voice "My voice" --project "Spring campaign" --dry-run
 
 --voice takes a voice name or id from \`aitopia voices\` (clone one with \`aitopia voices create\`).
 A voice that expired at the provider fails with VOICE_EXPIRED: re-create it with
-\`aitopia voices create <name> --consent\` (${VOICE_CLONE_CREDITS} credits).`,
+\`aitopia voices create <name> --consent\` (${VOICE_CLONE_CREDITS} credits).
+MiniMax speech and cloned voices also understand inline tags like (laughs), (sighs)
+and (breath) in the text.`,
       ),
   );
   addScopeOptions(audio).action(action((g, words, opts) => audioCommand(createContext(g), words as string[], opts as Parameters<typeof audioCommand>[2])));

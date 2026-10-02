@@ -149,16 +149,20 @@ export async function generateAndDeliver(
   options: GenerateOptions & { aspect?: string },
   extra: Record<string, unknown>,
   label: string,
+  /** Sees the first answer and the finished one (e.g. to print a server note). */
+  onAnswer?: (outcome: ToolOutcome) => void,
 ): Promise<void> {
   const activity = startActivity(ctx, options.dryRun ? 'Checking the price' : label);
   try {
     const first = await runGeneration(ctx, session, tool, kind, prompt, options, extra, activity.callOptions);
+    onAnswer?.(first);
     if (options.dryRun) {
       activity.stop();
       deliverEstimate(ctx, first);
       return;
     }
     const done = await settle(ctx, session, first, label, activity);
+    onAnswer?.(done);
     await deliver(ctx, done, options, { expectFiles: true, prompt: options.name ?? prompt });
   } finally {
     activity.stop();

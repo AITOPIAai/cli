@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-10-02
+
+### Added
+
+- `aitopia audio --emotion <emotion>`: read the text in a mood (`happy`, `sad`, `angry`, `fearful`, `disgusted`, `surprised`, `calm`, `fluent`), sent to `generate_audio` as `emotion`. Speech models that support it use it (MiniMax speech, so your cloned voices); when the model does not, the server's note says so and it is printed. Works with and without `--voice`, and with `--dry-run`, `--project` and `--json`. Any other value is a usage error (exit 2) before anything is called.
+
 ## [0.1.0] - 2026-10-02
 
 First public release.
@@ -37,4 +43,5 @@ First public release.
 - Clear messages for an unknown or not-recommended model (with `Did you mean: ...`), a stale run (`RUN_STALE`, with the creations link), an invalid run token, a model without a price (`PRICE_UNKNOWN`) and batch items that were not started (`SLOT_TIMEOUT`, `BATCH_UNAVAILABLE`; nothing charged).
 - `--json` output for scripts, stable exit codes (including 5 for "submitted, outcome unknown"), `NO_COLOR` support.
 
+[0.2.0]: https://github.com/AITOPIAai/cli/releases/tag/v0.2.0
 [0.1.0]: https://github.com/AITOPIAai/cli/releases/tag/v0.1.0

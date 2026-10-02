@@ -219,6 +219,7 @@ aitopia voices create "My voice" me.m4a --consent
 # Ready: the voice "My voice" (60307754-...)    (example output)
 # Saved my-voice-preview.mp3
 aitopia audio "Thanks for watching, see you next week." --voice "My voice"
+aitopia audio "We did it, the launch is live!" --voice "My voice" --emotion happy
 aitopia voices                                  # name, state, created, last used
 aitopia voices delete "My voice"
 ```
@@ -233,6 +234,12 @@ it (`aitopia voices` then says "may have expired", and speaking fails with
 re-creates it from the stored sample (150 credits again, always shown) or
 finishes one that is still being created (not charged again). Re-creating a
 voice that is ready and not flagged as expired asks first (`--yes` in scripts).
+
+`--emotion` reads the text in a mood: `happy`, `sad`, `angry`, `fearful`,
+`disgusted`, `surprised`, `calm` or `fluent`. Speech models that support it use
+it (MiniMax speech, so your cloned voices); with another model the CLI prints the
+server's notice that the emotion was not used. MiniMax speech and cloned voices
+also understand inline tags like `(laughs)`, `(sighs)` and `(breath)` in the text.
 
 Turn speech into subtitles or text (1 credit; a video costs 1 more because its
 sound is extracted first):
@@ -289,7 +296,7 @@ lists the closest current models (`Did you mean: ...`).
 | `aitopia model <id>` | Show a model's input fields |
 | `aitopia image <prompt> [--model id] [--aspect r] [-n 1-4] [--set k=v] [--dry-run]` | Generate images |
 | `aitopia video <prompt> [--model id] [--image file\|url] [--duration s] [--aspect r] [--set k=v] [--dry-run]` | Generate a video |
-| `aitopia audio <text> [--model id \| --voice name] [--set k=v] [--dry-run]` | Generate speech, music or sound (`--voice`: in one of your cloned voices) |
+| `aitopia audio <text> [--model id \| --voice name] [--emotion mood] [--set k=v] [--dry-run]` | Generate speech, music or sound (`--voice`: in one of your cloned voices; `--emotion`: in a mood) |
 | `aitopia edit <file\|url> <instruction> [--dry-run] [--plan token] [--max-credits n] [--keep-steps]` | Edit a file in plain words (planned steps, shown first) |
 | `aitopia batch <file> [--dry-run] [--wait \| --no-wait]` | Make up to 12 images, videos and audio clips from a JSON file |
 | `aitopia transcribe <file\|url> [--language code] [--format srt\|txt\|json] [--words] [--dry-run]` | Speech to subtitles or text |
