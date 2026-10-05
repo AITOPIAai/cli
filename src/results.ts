@@ -2,11 +2,11 @@ import { relative } from 'node:path';
 import type { Context } from './context.js';
 import { downloadAsset, resolveOutputTarget } from './download.js';
 import { assetsOf, buyCreditsUrl, isFailed, openInAitopiaUrl, type ToolOutcome } from './envelope.js';
-import { BUY_CREDITS_URL, CliError, EXIT, failureToError, formatNumber, suggestionList } from './errors.js';
+import { BUY_CREDITS_URL, CliError, EXIT, failureToError, formatNumber, RUN_LIMITED, runLimitNotes, runLimitOf, suggestionList, type RunLimit } from './errors.js';
 import { isLoopbackHost } from './config.js';
 import { addReadyResult, setActiveRun } from './interrupt.js';
 import type { CallOptions, Session } from './mcp.js';
-import { describeProgress, progressMessage, renderTable, type Spinner } from './output.js';
+import { describeProgress, progressMessage, renderTable, type Output, type Spinner } from './output.js';
 import { isRunning, waitForRun } from './poll.js';
 
 export interface DeliverOptions {
@@ -100,6 +100,18 @@ function num(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+/** A balance's run limit (credits, whoami): a warning with the server's message verbatim, then when to try again / how to lift it. */
+export function warnRunLimit(out: Output, limit: RunLimit, buyCreditsUrl?: string): void {
+  out.warn(limit.message);
+  for (const note of runLimitNotes(limit, { buyCreditsUrl })) out.note(note);
+}
+
+/** A dry run while runs are limited: "Not available: <server message>" instead of "Affordable". */
+export function printRunLimitUnavailable(out: Output, limit: RunLimit, buyCreditsUrl?: string): void {
+  out.line(`Not available: ${out.out.red(limit.message)}`);
+  for (const note of runLimitNotes(limit, { buyCreditsUrl })) out.line(note);
+}
+
 /** A dryRun answer: {status:"estimate"} (single tools) or {status:"dry_run"} (generate_batch). */
 export function isEstimate(outcome: ToolOutcome): boolean {
   return !outcome.isError && (outcome.payload.status === 'estimate' || outcome.payload.status === 'dry_run');
@@ -116,13 +128,13 @@ export function creditsText(value: unknown): string {
  * balance does not cover it (the price check itself worked); that case is said
  * plainly and `affordable: false` is in --json.
  */
-export function deliverEstimate(ctx: Context, outcome: ToolOutcome, extra: { balance?: number | 'unlimited' } = {}): void {
+export function deliverEstimate(ctx: Context, outcome: ToolOutcome, extra: { balance?: number | 'unlimited'; runLimit?: RunLimit } = {}): void {
   const { out } = ctx;
   if (isFailed(outcome)) {
     throw failureToError(outcome.payload, { buyCreditsUrl: buyCreditsUrl(outcome) });
   }
   if (!outcome.isError && outcome.payload.status === 'dry_run') {
-    deliverBatchEstimate(ctx, outcome.payload, extra.balance);
+    deliverBatchEstimate(ctx, outcome.payload, extra.balance, extra.runLimit);
     return;
   }
   if (!isEstimate(outcome)) {
@@ -147,7 +159,9 @@ export function deliverEstimate(ctx: Context, outcome: ToolOutcome, extra: { bal
     if (parts.length > 0) out.line(out.out.dim(`Breakdown: ${parts.join(', ')}`));
   }
   out.line(`Balance: ${balance === null || balance === undefined ? 'unknown' : `${creditsText(balance)} available`}`);
-  if (p.affordable === true) out.line(`Affordable: ${out.out.green('yes')}`);
+  const runLimit = runLimitOf(p) ?? extra.runLimit;
+  if (runLimit) printRunLimitUnavailable(out, runLimit, buyCreditsUrl(outcome));
+  else if (p.affordable === true) out.line(`Affordable: ${out.out.green('yes')}`);
   else if (p.affordable === false) {
     out.line(`Affordable: ${out.out.red('no, not enough credits')}`);
     out.line(`Buy credits: ${typeof p.buyCreditsUrl === 'string' && p.buyCreditsUrl ? p.buyCreditsUrl : BUY_CREDITS_URL}`);
@@ -160,8 +174,9 @@ export function deliverEstimate(ctx: Context, outcome: ToolOutcome, extra: { bal
  * balance. Exit 1 when an item would be refused (its run would fail), else 0
  * (also when the balance is short: that is said plainly).
  */
-export function deliverBatchEstimate(ctx: Context, payload: Record<string, unknown>, balance?: number | 'unlimited'): void {
+export function deliverBatchEstimate(ctx: Context, payload: Record<string, unknown>, balance?: number | 'unlimited', balanceRunLimit?: RunLimit): void {
   const { out } = ctx;
+  const runLimit = runLimitOf(payload) ?? balanceRunLimit;
   const items = (Array.isArray(payload.items) ? payload.items : []).filter(
     (i): i is Record<string, unknown> => Boolean(i) && typeof i === 'object',
   );
@@ -171,13 +186,16 @@ export function deliverBatchEstimate(ctx: Context, payload: Record<string, unkno
   const body = {
     ...payload,
     ...(balance !== undefined ? { balance: { creditsForGeneration: balance }, affordable } : {}),
+    ...(runLimit && !payload.runLimit ? { runLimit } : {}),
   };
   if (!out.jsonMode) {
     const rows: string[][] = [['ITEM', 'KIND', 'MODEL', 'CREDITS', 'BASIS']];
     for (const item of items) {
       const index = num(item.index);
-      const note =
-        typeof item.code === 'string'
+      const itemLimit = runLimitOf(item);
+      const note = itemLimit
+        ? `${itemLimit.code}: see below` // shown whole below the table (it has line breaks)
+        : typeof item.code === 'string'
           ? `${item.code}: ${typeof item.error === 'string' ? item.error : 'would be refused'}`
           : typeof item.basis === 'string'
             ? item.basis
@@ -199,15 +217,18 @@ export function deliverBatchEstimate(ctx: Context, payload: Record<string, unkno
     const coverage = payload.complete === false ? ` (${priced} of ${items.length} items priced)` : '';
     out.line(`${out.out.bold('Total:')} ${creditsText(total)}${coverage}`);
     if (balance !== undefined) out.line(`Balance: ${creditsText(balance)} available`);
-    if (affordable === false) {
+    const shownLimit = runLimit ?? refused.map((i) => runLimitOf(i)).find((l) => l !== undefined);
+    if (shownLimit) printRunLimitUnavailable(out, shownLimit);
+    else if (affordable === false) {
       out.line(out.out.red('Not enough credits for this batch.'));
       out.line(`Buy credits: ${BUY_CREDITS_URL}`);
     }
     out.line(out.out.dim('Nothing was submitted or charged.'));
   }
   if (refused.length > 0) {
-    const codes = new Set(refused.map((i) => String(i.code)));
-    throw new CliError(`${refused.length} of ${items.length} items would be refused.`, EXIT.FAILED, {
+    const allLimited = refused.every((i) => runLimitOf(i) !== undefined);
+    const codes = new Set(refused.map((i) => (runLimitOf(i) ? RUN_LIMITED : String(i.code))));
+    throw new CliError(`${refused.length} of ${items.length} items would be refused.`, allLimited ? EXIT.RUN_LIMITED : EXIT.FAILED, {
       code: codes.size === 1 ? [...codes][0] : 'ITEMS_REFUSED',
       hint: 'Fix those items (see above) before running the batch. Nothing was spent.',
       data: { ...body, status: 'dry_run' },

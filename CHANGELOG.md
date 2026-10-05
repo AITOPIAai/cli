@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Run limits (account suspension): a failure with code `RUN_LIMITED`, `QUEUE_LIMIT_EXCEEDED` with reason `abuse_limit`, or a `runLimit` object (top level, under `details` or `balance`) prints the server's message verbatim, line breaks kept, and exits with the new code 6. `retryAfterSeconds` adds `You can try again in N minutes (at HH:MM).`; `upgrade: true` adds `Upgrading your AITOPIA plan lifts this limit: https://aitopia.ai/pricing`; `upgrade: false` adds nothing (the message says whom to contact). A run limit is never retried or polled again, whatever its code, `retryable` or `retryAfterSeconds`. `--json` failures have `code: "RUN_LIMITED"`, `exitCode: 6` and the normalized `runLimit`. A `batch` whose failed items all hit the limit exits 6; an `edit` step stopped by it exits 6 with the finished steps kept.
+- `aitopia credits` and `aitopia whoami` print a run limit carried by the balance as a warning with the server's message; `--dry-run` (`image`, `video`, `audio`, `edit`, `transcribe`, `voices create`, `agent run`, `batch`, `run`) prints `Not available: <message>` instead of `Affordable` (still exit 0), and `edit --dry-run` then leaves out the `--plan` command.
+- A plain `QUEUE_LIMIT_EXCEEDED` (too many runs going at once, no run-limit reason) keeps its hint and exit 1.
+
 ## [0.2.0] - 2026-10-02
 
 ### Added

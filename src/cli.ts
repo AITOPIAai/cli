@@ -85,7 +85,8 @@ Examples:
   $ aitopia credits --json
 
 Exit codes: 0 ok, 1 failed, 2 usage error, 3 not signed in, 4 not enough credits,
-5 submitted but outcome unknown (check with \`aitopia status <runToken>\`), 130 interrupted.
+5 submitted but outcome unknown (check with \`aitopia status <runToken>\`), 6 runs limited
+on your account (the server's message says why), 130 interrupted.
 --dry-run prints the price and exits 0, also when your balance is short (it says so).
 --help and --version always print text, also with --json.
 Docs: https://github.com/AITOPIAai/cli#readme`;
@@ -233,7 +234,7 @@ balance. Long runs are followed until they finish; files are saved (-o), text
 answers are printed. --no-wait prints the run token: check it later with
 \`aitopia status <runToken> --wait\`.
 Exit: 0 done, 1 failed, 2 usage, 4 not enough credits, 5 still running (--no-wait)
-or outcome unknown.`,
+or outcome unknown, 6 runs limited on your account.`,
     );
   addScopeOptions(agentRun).action(action((g, ref, opts) => agentRunCommand(createContext(g), ref as string, opts as Parameters<typeof agentRunCommand>[2])));
 
@@ -633,7 +634,7 @@ export function jsonStatus(error: CliError): string {
   return 'failed';
 }
 
-function printError(out: Output, error: CliError, verbose: boolean, cause: unknown): void {
+export function printError(out: Output, error: CliError, verbose: boolean, cause: unknown): void {
   if (out.jsonMode) {
     out.json({
       ...error.data,

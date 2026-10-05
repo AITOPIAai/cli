@@ -6,6 +6,8 @@ export const EXIT = {
   CREDITS: 4,
   /** Submitted, but the outcome is not known yet (still running, or the answer was lost). */
   PENDING: 5,
+  /** AITOPIA has limited (suspended) runs on this account; buying credits alone does not lift it. */
+  RUN_LIMITED: 6,
   INTERRUPTED: 130,
 } as const;
 
@@ -99,6 +101,7 @@ export function isAitopiaAuthFailure(code: string | undefined, message: string):
 export function exitCodeFor(code: string | undefined, message = ''): number {
   if (isAitopiaAuthFailure(code, message)) return EXIT.AUTH;
   if (code === 'INSUFFICIENT_CREDITS') return EXIT.CREDITS;
+  if (code === RUN_LIMITED) return EXIT.RUN_LIMITED;
   return EXIT.FAILED;
 }
 
@@ -121,8 +124,94 @@ function num(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+/** The CLI's error code for every run limit shape (the server's own code stays in data.runLimit). */
+export const RUN_LIMITED = 'RUN_LIMITED';
+/** QUEUE_LIMIT_EXCEEDED reasons that mean a run limit (not "too many runs going at once"). */
+const RUN_LIMIT_REASONS = new Set(['abuse_limit']);
+
+/** A run limit (account suspension) from AITOPIA's Marketplace, normalized. */
+export interface RunLimit {
+  code: string;
+  /** The Marketplace's own code when scotty answers RUN_LIMITED (e.g. QUEUE_LIMIT_EXCEEDED). */
+  upstreamCode?: string;
+  reason?: string;
+  /** The server's message, verbatim (may hold line breaks). */
+  message: string;
+  retryAfterSeconds?: number;
+  upgrade?: boolean;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readRunLimit(source: Record<string, unknown>, fallback?: Record<string, unknown>): RunLimit {
+  const code = str(source.code)?.toUpperCase() ?? str(fallback?.code)?.toUpperCase() ?? RUN_LIMITED;
+  const upstreamCode = str(source.upstreamCode) ?? str(fallback?.upstreamCode);
+  const reason = str(source.reason) ?? str(fallback?.reason);
+  const message = str(source.message) ?? str(source.error) ?? str(fallback?.error) ?? str(fallback?.message) ?? 'Runs are limited on this account.';
+  const retryAfter = num(source.retryAfterSeconds) ?? num(fallback?.retryAfterSeconds);
+  const upgrade = typeof source.upgrade === 'boolean' ? source.upgrade : typeof fallback?.upgrade === 'boolean' ? fallback.upgrade : undefined;
+  return {
+    code,
+    ...(upstreamCode ? { upstreamCode } : {}),
+    ...(reason ? { reason } : {}),
+    message,
+    ...(retryAfter !== undefined && retryAfter > 0 ? { retryAfterSeconds: retryAfter } : {}),
+    ...(upgrade !== undefined ? { upgrade } : {}),
+  };
+}
+
+/**
+ * The run limit a payload carries, in any of the shapes the server sends: a
+ * `runLimit` object (top level, under details or balance), code RUN_LIMITED,
+ * or QUEUE_LIMIT_EXCEEDED with reason abuse_limit. A plain
+ * QUEUE_LIMIT_EXCEEDED (too many runs at once) is not one.
+ */
+export function runLimitOf(payload: unknown): RunLimit | undefined {
+  if (!isObject(payload)) return undefined;
+  for (const holder of [payload, payload.details, payload.balance]) {
+    if (isObject(holder) && isObject(holder.runLimit)) return readRunLimit(holder.runLimit, payload);
+  }
+  const code = str(payload.code)?.toUpperCase();
+  const reason = str(payload.reason)?.toLowerCase();
+  if (code === RUN_LIMITED || (code === 'QUEUE_LIMIT_EXCEEDED' && reason !== undefined && RUN_LIMIT_REASONS.has(reason))) {
+    return readRunLimit(payload);
+  }
+  return undefined;
+}
+
+/** "14:05": local time of day. */
+function clock(at: Date): string {
+  return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+}
+
+/** Lines after a run limit's message: when it can be tried again, and whether a plan upgrade lifts it. */
+export function runLimitNotes(limit: RunLimit, opts: { buyCreditsUrl?: string; now?: () => number } = {}): string[] {
+  const notes: string[] = [];
+  if (limit.retryAfterSeconds !== undefined) {
+    const minutes = Math.max(1, Math.ceil(limit.retryAfterSeconds / 60));
+    const at = new Date((opts.now ?? Date.now)() + limit.retryAfterSeconds * 1000);
+    notes.push(`You can try again in ${minutes} minute${minutes === 1 ? '' : 's'} (at ${clock(at)}).`);
+  }
+  if (limit.upgrade === true) notes.push(`Upgrading your AITOPIA plan lifts this limit: ${opts.buyCreditsUrl ?? BUY_CREDITS_URL}`);
+  return notes;
+}
+
 /** Turns a server failure payload into a CliError with the right exit code and next steps. */
-export function failureToError(payload: FailurePayload, opts: { buyCreditsUrl?: string; openInAitopia?: string } = {}): CliError {
+export function failureToError(
+  payload: FailurePayload,
+  opts: { buyCreditsUrl?: string; openInAitopia?: string; now?: () => number } = {},
+): CliError {
+  const runLimit = runLimitOf(payload);
+  if (runLimit) {
+    // The server's message is shown verbatim (it names the reason and any contact); never retried.
+    return new CliError(runLimit.message, EXIT.RUN_LIMITED, {
+      code: RUN_LIMITED,
+      notes: runLimitNotes(runLimit, opts),
+      data: { ...payload, runLimit },
+    });
+  }
   const code = str(payload.code)?.toUpperCase() ?? 'FAILED';
   const message = str(payload.error) ?? str(payload.message) ?? 'The tool failed.';
   const hint = str(payload.hint);

@@ -3,12 +3,12 @@ import { joinWords } from '../args.js';
 import { withSession, type Context } from '../context.js';
 import { downloadAsset, resolveOutputTarget, slugify, type OutputTarget } from '../download.js';
 import { assetsOf, buyCreditsUrl, isFailed, openInAitopiaUrl, type ToolOutcome } from '../envelope.js';
-import { CliError, EXIT, UsageError, exitCodeFor, failureToError } from '../errors.js';
+import { CliError, EXIT, RUN_LIMITED, UsageError, exitCodeFor, failureToError, runLimitOf, runLimitNotes } from '../errors.js';
 import { addReadyResult, setActiveRun } from '../interrupt.js';
 import type { Session } from '../mcp.js';
 import { describeProgress, progressMessage } from '../output.js';
 import { isRunning, waitForRun } from '../poll.js';
-import { allowHttpLoopback, creditsText, startActivity, type Activity, type DeliverOptions } from '../results.js';
+import { allowHttpLoopback, creditsText, printRunLimitUnavailable, startActivity, type Activity, type DeliverOptions } from '../results.js';
 import { checkScopeOptions, resolveScope, type ScopeOptions } from '../resolve.js';
 import { assertLocalFile, contentTypeFor, isRemoteUrl, uploadSource } from '../upload.js';
 import { paidCall } from './generate.js';
@@ -346,7 +346,10 @@ function deliverEditEstimate(ctx: Context, outcome: ToolOutcome, options: EditOp
   out.line(`${out.out.bold('Total:')} ${creditsText(totalOf(p))}${coverage}`);
   const balance = isObject(p.balance) ? p.balance.creditsForGeneration : undefined;
   if (balance !== undefined && balance !== null) out.line(`Balance: ${creditsText(balance)} available`);
-  if (p.affordable === false) {
+  const runLimit = runLimitOf(p);
+  if (runLimit) {
+    printRunLimitUnavailable(out, runLimit, buyCreditsUrl(outcome));
+  } else if (p.affordable === false) {
     out.line(out.out.red('Not enough credits for this edit.'));
     out.line(`Buy credits: ${str(p.buyCreditsUrl) ?? buyCreditsUrl(outcome)}`);
   } else if (p.affordable === true) {
@@ -359,7 +362,7 @@ function deliverEditEstimate(ctx: Context, outcome: ToolOutcome, options: EditOp
     out.line(out.out.red(`Over your --max-credits limit${limit !== undefined ? ` of ${creditsText(limit)}` : ''}: it would not run.`));
   }
   out.line(out.out.dim('Nothing was run or charged.'));
-  if (runCommand) {
+  if (runCommand && !runLimit) {
     out.line('');
     out.line('To run exactly this plan at this price (within 1 hour):');
     out.line(`  ${runCommand}`);
@@ -538,8 +541,9 @@ async function deliverEdit(ctx: Context, outcome: ToolOutcome, tracker: StepTrac
   if (p.status === 'partial') {
     // A step failed mid-chain: the steps before it finished and were paid for.
     tracker.printPlan(true);
-    const code = str(p.code)?.toUpperCase() ?? 'STEP_FAILED';
-    const reason = str(p.error) ?? 'The step failed.';
+    const runLimit = runLimitOf(p);
+    const code = runLimit ? RUN_LIMITED : (str(p.code)?.toUpperCase() ?? 'STEP_FAILED');
+    const reason = runLimit?.message ?? str(p.error) ?? 'The step failed.';
     const where = failedStepLabel(p, plan);
     const finished = finishedSteps(p, plan);
     const lastUrl = str(p.lastAssetUrl);
@@ -549,6 +553,7 @@ async function deliverEdit(ctx: Context, outcome: ToolOutcome, tracker: StepTrac
     const files = saved.map((s) => s.file).filter((f): f is string => Boolean(f));
     const notes: string[] = [];
     if (code === 'INSUFFICIENT_CREDITS') notes.push(`Buy credits: ${buyCreditsUrl(outcome)}`);
+    if (runLimit) notes.push(...runLimitNotes(runLimit, { buyCreditsUrl: buyCreditsUrl(outcome) }));
     const partialData = { status: 'partial', ...(plan ? { plan: planWithFiles(plan, saved) } : {}), files, ...(errors.length > 0 ? { downloadErrors: errors } : {}) };
     if (code === 'POLL_FAILED') throw pollFailed(p, `${where.replace(/ failed$/, '')} could not be checked: ${reason}`, open, partialData);
     if (open) notes.push(`Open in AITOPIA: ${open}`);
@@ -559,7 +564,7 @@ async function deliverEdit(ctx: Context, outcome: ToolOutcome, tracker: StepTrac
           ? 'The steps before it finished and are saved (and in AITOPIA); they were paid for, so do not run them again. Nothing after the failed step ran.'
           : 'Nothing after the failed step ran.',
       notes,
-      data: { ...p, status: 'partial', ...(plan ? { plan: planWithFiles(plan, saved) } : {}), files, ...(errors.length > 0 ? { downloadErrors: errors } : {}) },
+      data: { ...p, ...(runLimit ? { runLimit } : {}), status: 'partial', ...(plan ? { plan: planWithFiles(plan, saved) } : {}), files, ...(errors.length > 0 ? { downloadErrors: errors } : {}) },
     });
   }
 

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { withSession, type Context } from '../context.js';
-import { failureToError, UsageError } from '../errors.js';
+import { failureToError, runLimitOf, UsageError, type RunLimit } from '../errors.js';
 import { buyCreditsUrl, isFailed } from '../envelope.js';
 import { inFlight, setActiveRun } from '../interrupt.js';
 import type { Session } from '../mcp.js';
@@ -168,12 +168,14 @@ function readBatchFile(file: string): { raw: unknown; baseDir: string } {
   }
 }
 
-async function balanceOf(session: Session): Promise<number | 'unlimited' | undefined> {
+/** The spendable balance and any run limit it carries (both unknown when the balance cannot be read). */
+async function balanceOf(session: Session): Promise<{ balance?: number | 'unlimited'; runLimit?: RunLimit }> {
   try {
     const outcome = await session.callTool('get_credit_balance', {});
-    return isFailed(outcome) ? undefined : spendableCredits(outcome.payload);
+    if (isFailed(outcome)) return { runLimit: runLimitOf(outcome.payload) };
+    return { balance: spendableCredits(outcome.payload), runLimit: runLimitOf(outcome.payload) };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -199,7 +201,7 @@ export async function batchCommand(ctx: Context, file: string, options: BatchOpt
       args.dryRun = true;
       const outcome = await session.callTool('generate_batch', args);
       if (outcome.isError) throw failureToError(outcome.payload, { buyCreditsUrl: buyCreditsUrl(outcome) });
-      deliverEstimate(ctx, outcome, { balance: await balanceOf(session) });
+      deliverEstimate(ctx, outcome, await balanceOf(session));
       return;
     }
 

@@ -411,6 +411,7 @@ and `runTokens` lists the runs still going.
 | 3 | Not signed in, or the session expired: run `aitopia login` |
 | 4 | Not enough credits (for `batch`: every failed item failed for lack of credits) |
 | 5 | Submitted, but the outcome is not known yet (still running, the answer was lost, or the connection broke after a paid request was sent). Do not run it again: check with `aitopia status <runToken> --wait`, or look in AITOPIA |
+| 6 | Runs are limited (suspended) on your account. The server's message is printed as is; it says why and whom to contact. Nothing was run or charged. For `batch`: every failed item failed for this reason |
 | 130 | Interrupted (Ctrl+C) |
 
 ## Environment variables
@@ -456,6 +457,18 @@ generating it again.
 **"Not enough AITOPIA credits" / exit code 4.** The message shows how many credits
 the run needs and how many you have, plus a link to buy more. Check your balance
 with `aitopia credits`.
+
+**Runs limited on your account / exit code 6.** AITOPIA has limited or suspended
+runs on your account. The CLI prints AITOPIA's message exactly as sent (it may span
+several lines and says why and whom to contact). When the limit ends at a known
+time, it adds `You can try again in N minutes (at HH:MM).`; when a higher plan lifts
+the limit, it adds `Upgrading your AITOPIA plan lifts this limit: https://aitopia.ai/pricing`.
+The CLI never retries a limited run by itself. `aitopia credits` and `aitopia whoami`
+show the same message as a warning while the limit lasts, and `--dry-run` shows
+`Not available: <message>` instead of `Affordable` (still exit 0; with `--json`,
+check `runLimit`). With `--json` a failure has `code: "RUN_LIMITED"`, `exitCode: 6`
+and `runLimit` (the server's `code`, `reason`, `message`, `retryAfterSeconds`,
+`upgrade`). A plain `QUEUE_LIMIT_EXCEEDED` (too many runs going at once) still exits 1.
 
 **Behind a corporate proxy.** Node.js does not use `HTTPS_PROXY` by default. With
 Node.js 22.21+ or 24.5+, set `NODE_USE_ENV_PROXY=1` together with `HTTPS_PROXY`.

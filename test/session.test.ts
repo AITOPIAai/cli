@@ -18,7 +18,7 @@ import { toolsCommand } from '../src/commands/tools.js';
 import { loginCommand } from '../src/commands/login.js';
 import { CliError, failureToError } from '../src/errors.js';
 import { clearReadyResults, reportInterrupt } from '../src/interrupt.js';
-import { buildProgram, jsonStatus } from '../src/cli.js';
+import { buildProgram, jsonStatus, printError } from '../src/cli.js';
 import { batchCommand } from '../src/commands/batch.js';
 import { runCommand } from '../src/commands/run.js';
 import { statusCommand } from '../src/commands/status.js';
@@ -64,6 +64,10 @@ let batchUnavailable = false;
 /** withWaitNote: the next get_run_status answer carries this top-level note (the per-user waiting cap was full). */
 let waitNoteOnce = '';
 let balance = 8951;
+/** Set: get_credit_balance and dryRun estimates carry this runLimit (the Marketplace's normalized shape). */
+let balanceRunLimit: Record<string, unknown> | undefined;
+/** Set: generate_image (a real run with a model) fails with this body. */
+let imageFailure: Record<string, unknown> | undefined;
 
 const ok = (value: unknown) => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 // normalizeFailure: {status:'failed', code, error, retryable?, ...}; also in structuredContent.
@@ -96,10 +100,13 @@ const estimate = (credits: number, basis: string, modelId: string) => {
     modelId,
     balance: { creditsForGeneration: balance },
     affordable,
+    ...(balanceRunLimit ? { runLimit: balanceRunLimit } : {}),
     note: 'Estimate only: nothing was submitted, reserved or charged. Run the same call without dryRun to start it.',
     ...(affordable ? {} : { buyCreditsUrl: 'https://aitopia.ai/pricing', hint: 'Do not start it.' }),
   });
 };
+
+const SUSPENDED_TEXT = 'Your access to generation has been suspended.\nIf you believe this is a mistake, contact info@aitopia.ai.';
 
 const INVALID_TOKEN_TEXT = 'Invalid, expired or unrecognized runToken.';
 
@@ -172,6 +179,9 @@ function generateBatch(args: Record<string, unknown>) {
     }
     if (item.modelId === 'nope/x') {
       return { ...head, status: 'failed', code: 'MODEL_NOT_FOUND', error: '"nope/x" is not an available model.', suggestions: SUGGESTIONS };
+    }
+    if (item.modelId === 'banned/x') {
+      return { ...head, status: 'failed', code: 'RUN_LIMITED', upstreamCode: 'QUEUE_LIMIT_EXCEEDED', reason: 'abuse_limit', error: SUSPENDED_TEXT, retryable: false, upgrade: false };
     }
     if (item.modelId === 'poor/x') {
       return { ...head, status: 'failed', code: 'INSUFFICIENT_CREDITS', error: 'Insufficient credits for this generation.', requiredCredits: 40, availableCredits: 3, retryable: false };
@@ -291,7 +301,7 @@ function editMedia(args: Record<string, unknown>) {
         : editPlan(),
       totalCredits: EDIT_TOTAL,
       complete: true,
-      balance: { creditsForGeneration: balance },
+      balance: { creditsForGeneration: balance, ...(balanceRunLimit ? { runLimit: balanceRunLimit } : {}) },
       affordable,
       ...(affordable ? {} : { buyCreditsUrl: 'https://aitopia.ai/pricing', hint: 'Do not start it.' }),
       ...(maxCredits !== undefined ? { maxCredits, withinBudget: EDIT_TOTAL <= maxCredits } : {}),
@@ -562,6 +572,7 @@ function tool(name: string, args: Record<string, unknown>) {
         dailyAllowanceCredits: 0,
         unlimited: true,
         agentBalance: { totalCredits: 8951, paidCreditsBalance: 8951, dailyCreditsRemaining: 0, dailyAllowanceCredits: 0, unlimited: false },
+        ...(balanceRunLimit ? { runLimit: balanceRunLimit } : {}),
       });
     case 'generate_image': {
       if (!args.selectedModelId) {
@@ -577,6 +588,7 @@ function tool(name: string, args: Record<string, unknown>) {
         const count = typeof args.count === 'number' ? args.count : 1;
         return estimate(4 * count, `${count} image${count > 1 ? 's' : ''} x 4 credits.`, String(args.selectedModelId));
       }
+      if (imageFailure) return imageFailure.runLimit ? { content: [{ type: 'text', text: JSON.stringify(imageFailure) }], isError: true } : fail(imageFailure);
       const prompt = String(args.prompt);
       const baseName = prompt.length > 26 ? `${prompt.slice(0, 26)}…` : prompt;
       const count = typeof args.count === 'number' ? args.count : 1;
@@ -817,6 +829,8 @@ beforeEach(() => {
   batchUnavailable = false;
   waitNoteOnce = '';
   balance = 8951;
+  balanceRunLimit = undefined;
+  imageFailure = undefined;
   brokenFiles = false;
   revocationEndpoint = '';
   revoked = [];
@@ -2392,5 +2406,109 @@ describe('store agents', () => {
     expect(names()).toEqual(['list_store_agents']);
     const run = await buildProgram().parseAsync(['node', 'aitopia', 'agent', 'run', 'background-remover', '--server', `${base}/mcp`]).catch((e: unknown) => e as CliError);
     expect((run as CliError).message).toContain('needs the field "photo"');
+  });
+});
+
+describe('run limits (account suspension)', () => {
+  const TIMED = 'You started too many runs in a short time.\nRuns are paused for this account for a while.';
+  const model = { model: 'google/nano-banana-2' };
+  const printed = (error: CliError) => {
+    const c = ctx();
+    printError(c.out, error, false, error);
+    return stderr.text;
+  };
+
+  it('RUN_LIMITED envelope on a run: exit 6, the message printed verbatim with its line break, called once', async () => {
+    imageFailure = { code: 'RUN_LIMITED', upstreamCode: 'QUEUE_LIMIT_EXCEEDED', reason: 'abuse_limit', error: SUSPENDED_TEXT, retryable: false, upgrade: false, hint: 'Tell the user to contact support.' };
+    const error = await failure(imageCommand(ctx(), ['fox'], { ...model, output: dir }));
+    expect(error?.exitCode).toBe(6);
+    expect(error?.code).toBe('RUN_LIMITED');
+    expect(error?.message).toBe(SUSPENDED_TEXT);
+    expect(names().filter((n) => n === 'generate_image')).toHaveLength(1);
+    expect(printed(error as CliError)).toBe(`Error: ${SUSPENDED_TEXT}\n`);
+  });
+
+  it('raw runLimit passthrough, timed: minutes and clock time; upgrade true adds the plan link', async () => {
+    imageFailure = { runLimit: { code: 'QUEUE_LIMIT_EXCEEDED', reason: 'abuse_limit', error: TIMED, upgrade: true, retryAfterSeconds: 1794 } };
+    const error = await failure(imageCommand(ctx(), ['fox'], { ...model, output: dir }));
+    expect(error?.exitCode).toBe(6);
+    expect(error?.message).toBe(TIMED);
+    expect(error?.notes[0]).toMatch(/^You can try again in 30 minutes \(at \d\d:\d\d\)\.$/);
+    expect(error?.notes[1]).toBe('Upgrading your AITOPIA plan lifts this limit: https://aitopia.ai/pricing');
+    expect(names().filter((n) => n === 'generate_image')).toHaveLength(1);
+    const text = printed(error as CliError);
+    expect(text).toContain(`Error: ${TIMED}\nYou can try again in 30 minutes`);
+  });
+
+  it('--json: status failed, code RUN_LIMITED, the verbatim error, exitCode 6 and the normalized runLimit', async () => {
+    imageFailure = { code: 'RUN_LIMITED', reason: 'abuse_limit', error: SUSPENDED_TEXT, retryable: false, upgrade: false };
+    const error = (await failure(imageCommand(ctx(true), ['fox'], { ...model, output: dir }))) as CliError;
+    const c = ctx(true);
+    printError(c.out, error, false, error);
+    const body = JSON.parse(stdout.text) as Record<string, unknown>;
+    expect(body).toMatchObject({ status: 'failed', code: 'RUN_LIMITED', error: SUSPENDED_TEXT, exitCode: 6, runLimit: { reason: 'abuse_limit', upgrade: false } });
+  });
+
+  it('a plain QUEUE_LIMIT_EXCEEDED keeps exit 1 and the "too many runs" hint', async () => {
+    imageFailure = { code: 'QUEUE_LIMIT_EXCEEDED', error: 'You have 5 runs in progress.', retryable: true };
+    const error = await failure(imageCommand(ctx(), ['fox'], { ...model, output: dir }));
+    expect(error?.exitCode).toBe(1);
+    expect(error?.code).toBe('QUEUE_LIMIT_EXCEEDED');
+    expect(error?.hint).toContain('aitopia status');
+  });
+
+  it('credits and whoami show the balance and a warning with the verbatim message', async () => {
+    balanceRunLimit = { code: 'QUEUE_LIMIT_EXCEEDED', reason: 'abuse_limit', message: SUSPENDED_TEXT, upgrade: false };
+    await creditsCommand(ctx());
+    expect(stdout.text.trim()).toBe('Credits: 8,951 available');
+    expect(stderr.text).toBe(`Warning: ${SUSPENDED_TEXT}\n`);
+    await creditsCommand(ctx(), { whoami: true });
+    expect(stdout.text).toContain('Signed in to');
+    expect(stderr.text).toBe(`Warning: ${SUSPENDED_TEXT}\n`);
+    balanceRunLimit = { code: 'QUEUE_LIMIT_EXCEEDED', reason: 'abuse_limit', message: TIMED, retryAfterSeconds: 1794, upgrade: true };
+    await creditsCommand(ctx());
+    expect(stderr.text).toMatch(/^Warning: You started too many runs in a short time\.\nRuns are paused for this account for a while\.\nYou can try again in 30 minutes \(at \d\d:\d\d\)\.\nUpgrading your AITOPIA plan lifts this limit: https:\/\/aitopia\.ai\/pricing\n$/);
+    await creditsCommand(ctx(true));
+    expect(JSON.parse(stdout.text).runLimit).toMatchObject({ message: TIMED });
+  });
+
+  it('credits without a runLimit prints no warning', async () => {
+    await creditsCommand(ctx());
+    expect(stderr.text).toBe('');
+  });
+
+  it('image --dry-run: "Not available: <message>" instead of Affordable; exit 0', async () => {
+    balanceRunLimit = { code: 'QUEUE_LIMIT_EXCEEDED', reason: 'abuse_limit', message: SUSPENDED_TEXT, upgrade: false };
+    await imageCommand(ctx(), ['fox'], { ...model, dryRun: true });
+    expect(stdout.text).toContain(`Not available: ${SUSPENDED_TEXT}\nNothing was submitted or charged.`);
+    expect(stdout.text).not.toContain('Affordable');
+    expect(stdout.text).not.toContain('Upgrading');
+  });
+
+  it('batch --dry-run shows the balance run limit; edit --dry-run shows it and no run command', async () => {
+    balanceRunLimit = { code: 'RUN_LIMITED', reason: 'abuse_limit', message: TIMED, retryAfterSeconds: 120, upgrade: true };
+    await batchCommand(ctx(), writeBatch([{ kind: 'image', prompt: 'a fox', modelId: 'google/nano-banana-2' }]), { dryRun: true });
+    expect(stdout.text).toContain(`Not available: ${TIMED}\nYou can try again in 2 minutes`);
+    expect(stdout.text).toContain('Upgrading your AITOPIA plan lifts this limit: https://aitopia.ai/pricing');
+    await editCommand(ctx(), 'https://cdn.aitopia.ai/fox.png', ['remove the background'], { dryRun: true });
+    expect(stdout.text).toContain(`Not available: ${TIMED}`);
+    expect(stdout.text).not.toContain('Affordable');
+    expect(stdout.text).not.toContain('--plan=');
+  });
+
+  it('batch: every item run-limited exits 6, generate_batch called once, each item shows the message', async () => {
+    const error = await failure(batchCommand(ctx(), writeBatch([{ kind: 'image', prompt: 'a', modelId: 'banned/x' }, { kind: 'image', prompt: 'b', modelId: 'banned/x' }]), {}));
+    expect(error?.exitCode).toBe(6);
+    expect(error?.code).toBe('RUN_LIMITED');
+    expect(names()).toEqual(['generate_batch']);
+    expect(stderr.text).toContain(`: ${SUSPENDED_TEXT}`);
+  });
+
+  it('status: a run that ends run-limited is reported once (exit 6), never asked again', async () => {
+    runStates['lim-1'] = [{ status: 'failed', code: 'RUN_LIMITED', reason: 'abuse_limit', error: SUSPENDED_TEXT, retryable: true, retryAfterSeconds: 30, upgrade: false }];
+    const error = await failure(statusCommand(ctx(), ['lim-1'], { wait: true, output: dir }));
+    expect(error?.exitCode).toBe(6);
+    expect(error?.message).toBe(SUSPENDED_TEXT);
+    expect(names().filter((n) => n === 'get_run_status')).toHaveLength(1);
   });
 });

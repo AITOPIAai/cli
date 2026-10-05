@@ -3,9 +3,9 @@ import { dirname, extname, join, relative } from 'node:path';
 import { withSession, type Context } from '../context.js';
 import { resolveOutputTarget, uniquePath } from '../download.js';
 import { assetsOf, isFailed, openInAitopiaUrl, type ToolOutcome } from '../envelope.js';
-import { BUY_CREDITS_URL, CliError, EXIT, UsageError, failureToError } from '../errors.js';
+import { BUY_CREDITS_URL, CliError, EXIT, UsageError, failureToError, runLimitOf } from '../errors.js';
 import type { Session } from '../mcp.js';
-import { allowHttpLoopback, creditsText, deliverEstimate, settle, startActivity } from '../results.js';
+import { allowHttpLoopback, creditsText, deliverEstimate, printRunLimitUnavailable, settle, startActivity } from '../results.js';
 import { buildSrt, cuesOf, normalizeLanguage, parseTranscript, sttInput, sttModelFor, WHISPER_STT_MODEL, type Transcript } from '../transcript.js';
 import { assertLocalFile, isRemoteUrl, uploadSource } from '../upload.js';
 import { mediaTypeOf, sourceStem } from './edit.js';
@@ -105,6 +105,7 @@ function deliverTwoStepEstimate(ctx: Context, extract: ToolOutcome, transcribe: 
   const balance = balanceOf(transcribe) ?? balanceOf(extract);
   const affordable =
     typeof balance === 'string' && balance.toLowerCase() === 'unlimited' ? true : typeof balance === 'number' && total !== undefined ? balance >= total : undefined;
+  const runLimit = runLimitOf(transcribe.payload) ?? runLimitOf(extract.payload);
   const { out } = ctx;
   if (out.jsonMode) {
     out.json({
@@ -116,12 +117,14 @@ function deliverTwoStepEstimate(ctx: Context, extract: ToolOutcome, transcribe: 
       ],
       ...(balance !== undefined ? { balance: { creditsForGeneration: balance } } : {}),
       ...(affordable !== undefined ? { affordable } : {}),
+      ...(runLimit ? { runLimit } : {}),
     });
     return;
   }
   out.line(`${out.out.bold('Estimate:')} ${creditsText(total)} (${creditsText(a)} to extract the audio, ${creditsText(b)} to transcribe it)`);
   out.line(`Balance: ${balance === undefined || balance === null ? 'unknown' : `${creditsText(balance)} available`}`);
-  if (affordable === true) out.line(`Affordable: ${out.out.green('yes')}`);
+  if (runLimit) printRunLimitUnavailable(out, runLimit);
+  else if (affordable === true) out.line(`Affordable: ${out.out.green('yes')}`);
   else if (affordable === false) {
     out.line(`Affordable: ${out.out.red('no, not enough credits')}`);
     out.line(`Buy credits: ${BUY_CREDITS_URL}`);

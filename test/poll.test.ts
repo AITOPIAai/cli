@@ -288,3 +288,38 @@ describe('waitForRuns', () => {
     expect(call).toHaveBeenCalledTimes(1 + MAX_TRANSIENT_POLL_FAILURES);
   });
 });
+
+describe('run limits are never retried', () => {
+  const SUSPENDED = 'Your access to generation has been suspended.\nIf you believe this is a mistake, contact info@aitopia.ai.';
+  const shapes = [
+    fail('RUN_LIMITED', SUSPENDED, { reason: 'abuse_limit', retryable: true, retryAfterSeconds: 1794, upgrade: false }),
+    fail('QUEUE_LIMIT_EXCEEDED', SUSPENDED, { reason: 'abuse_limit', retryable: true, retryAfterSeconds: 1794 }),
+    // Even under a code the poller would otherwise ask again for.
+    fail('RATE_LIMIT', 'x', { retryable: true, retryAfterSeconds: 5, runLimit: { code: 'QUEUE_LIMIT_EXCEEDED', reason: 'abuse_limit', error: SUSPENDED, upgrade: false } }),
+  ];
+
+  it('isTransientPollFailure is false for every run limit shape', () => {
+    for (const shape of shapes) expect(isTransientPollFailure(shape)).toBe(false);
+  });
+
+  it('waitForRun returns the run limit after one status call (no sleep, no second call)', async () => {
+    for (const shape of shapes) {
+      const call = vi.fn().mockResolvedValueOnce(shape);
+      const sleep = vi.fn(async () => {});
+      const done = await waitForRun(call, outcome({ status: 'running', runToken: 'tok' }), { sleep });
+      expect(done.isError).toBe(true);
+      expect(call).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    }
+  });
+
+  it('waitForRuns: a refused status call with a run limit throws exit 6 at once', async () => {
+    for (const shape of shapes) {
+      const call = vi.fn().mockResolvedValueOnce(shape);
+      const error = (await waitForRuns(call, ['a', 'b'], { untilDone: true, sleep: async () => undefined }).catch((e: unknown) => e)) as CliError;
+      expect(error.exitCode).toBe(6);
+      expect(error.message).toBe(SUSPENDED);
+      expect(call).toHaveBeenCalledTimes(1);
+    }
+  });
+});

@@ -8,6 +8,7 @@ import {
   CliError,
   EXIT,
   NOT_CHARGED_RETRY_CODES,
+  RUN_LIMITED,
   UsageError,
   failureToError,
   statusNotes,
@@ -286,12 +287,13 @@ export function finishItems(
   if (failed.length > 0) {
     const codes = new Set(failed.map((i) => i.failure?.code ?? 'FAILED'));
     const onlyCredits = codes.size === 1 && codes.has('INSUFFICIENT_CREDITS');
+    const onlyRunLimited = codes.size === 1 && codes.has(RUN_LIMITED);
     const notCharged = [...codes].every((c) => NOT_CHARGED_RETRY_CODES.has(c));
     const code = codes.size === 1 ? [...codes][0] ?? 'FAILED' : 'PARTIAL';
     const notes: string[] = [];
     if (onlyCredits) notes.push(`Buy credits: ${BUY_CREDITS_URL}`);
     if (extra.openInAitopia) notes.push(`Open in AITOPIA: ${extra.openInAitopia}`);
-    throw new CliError(headline, onlyCredits ? EXIT.CREDITS : EXIT.FAILED, {
+    throw new CliError(headline, onlyCredits ? EXIT.CREDITS : onlyRunLimited ? EXIT.RUN_LIMITED : EXIT.FAILED, {
       code,
       hint: notCharged ? 'Nothing was submitted or charged for the failed items; it is safe to run them again.' : undefined,
       notes,

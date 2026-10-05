@@ -1,5 +1,6 @@
 import { withSession, type Context } from '../context.js';
-import { failureToError, formatNumber, safeHost } from '../errors.js';
+import { failureToError, formatNumber, runLimitOf, safeHost } from '../errors.js';
+import { warnRunLimit } from '../results.js';
 import { buyCreditsUrl, isFailed } from '../envelope.js';
 
 function num(value: unknown): number | undefined {
@@ -53,5 +54,7 @@ export async function creditsCommand(ctx: Context, options: { whoami?: boolean }
     }
     if (options.whoami) out.line(`Signed in to ${safeHost(ctx.serverUrl)}.`);
     out.line(creditsLine(outcome.payload));
+    const runLimit = runLimitOf(outcome.payload);
+    if (runLimit) warnRunLimit(out, runLimit, buyCreditsUrl(outcome));
   });
 }

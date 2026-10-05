@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BUY_CREDITS_URL,
   CliError,
   EXIT,
   NOTHING_CHARGED_HINT,
@@ -8,6 +9,8 @@ import {
   NotSignedInError,
   OutcomeUnknownError,
   RECONNECT_APP_HINT,
+  runLimitNotes,
+  runLimitOf,
   toCliError,
   UsageError,
 } from '../src/errors.js';
@@ -183,5 +186,85 @@ describe('broken connections after a paid call', () => {
   it('batch items: requiredCredits at the top level still shows the needed credits', () => {
     const error = failureToError({ status: 'failed', code: 'INSUFFICIENT_CREDITS', error: 'Not enough credits', requiredCredits: 40, availableCredits: 3 });
     expect(error.notes).toContain('This run needs 40, you have 3 credits.');
+  });
+});
+
+describe('run limits', () => {
+  const SUSPENDED = 'Your access to generation has been suspended.\nIf you believe this is a mistake, contact info@aitopia.ai.';
+  const TIMED = 'You started too many runs in a short time.\nRuns are paused for this account for a while.';
+  // 2026-10-05 12:00:00 local time.
+  const now = () => new Date(2026, 9, 5, 12, 0, 0).getTime();
+
+  it('scotty envelope RUN_LIMITED: the message verbatim with its line breaks, exit 6, no hint of our own', () => {
+    const error = failureToError(
+      { status: 'failed', code: 'RUN_LIMITED', error: SUSPENDED, reason: 'abuse_limit', retryable: false, upgrade: false, hint: 'Tell the user to contact support.' },
+      { now },
+    );
+    expect(error.message).toBe(SUSPENDED);
+    expect(error.exitCode).toBe(EXIT.RUN_LIMITED);
+    expect(error.exitCode).toBe(6);
+    expect(error.code).toBe('RUN_LIMITED');
+    expect(error.hint).toBeUndefined();
+    expect(error.notes).toEqual([]);
+    expect(error.data.runLimit).toEqual({ code: 'RUN_LIMITED', reason: 'abuse_limit', message: SUSPENDED, upgrade: false });
+  });
+
+  it('scotty envelope QUEUE_LIMIT_EXCEEDED + reason abuse_limit is a run limit, not the "too many runs" hint', () => {
+    const error = failureToError({ status: 'failed', code: 'QUEUE_LIMIT_EXCEEDED', reason: 'abuse_limit', error: SUSPENDED, retryable: false, upgrade: false });
+    expect(error.message).toBe(SUSPENDED);
+    expect(error.exitCode).toBe(6);
+    expect(error.code).toBe('RUN_LIMITED');
+    expect(error.hint).toBeUndefined();
+    expect((error.data.runLimit as { code: string }).code).toBe('QUEUE_LIMIT_EXCEEDED');
+  });
+
+  it('raw passthrough { runLimit: {...} } (also under details, as normalizeFailure moves it)', () => {
+    const runLimit = { code: 'QUEUE_LIMIT_EXCEEDED', reason: 'abuse_limit', error: SUSPENDED, upgrade: false };
+    for (const payload of [{ runLimit }, { status: 'failed', code: 'FAILED', error: 'x', details: { runLimit } }]) {
+      const error = failureToError(payload, { now });
+      expect(error.message).toBe(SUSPENDED);
+      expect(error.exitCode).toBe(6);
+      expect(error.notes).toEqual([]);
+    }
+  });
+
+  it('timed variant: retryAfterSeconds becomes minutes and a clock time', () => {
+    const error = failureToError({ runLimit: { code: 'QUEUE_LIMIT_EXCEEDED', reason: 'abuse_limit', error: TIMED, upgrade: false, retryAfterSeconds: 1794 } }, { now });
+    expect(error.message).toBe(TIMED);
+    expect(error.notes).toEqual(['You can try again in 30 minutes (at 12:29).']);
+    const one = failureToError({ status: 'failed', code: 'RUN_LIMITED', error: TIMED, retryAfterSeconds: 20 }, { now });
+    expect(one.notes).toEqual(['You can try again in 1 minute (at 12:00).']);
+  });
+
+  it('upgrade true adds the plan link (the existing pricing URL); false adds nothing', () => {
+    const up = failureToError({ status: 'failed', code: 'RUN_LIMITED', error: TIMED, upgrade: true, retryAfterSeconds: 600 }, { now });
+    expect(up.notes).toEqual(['You can try again in 10 minutes (at 12:10).', `Upgrading your AITOPIA plan lifts this limit: ${BUY_CREDITS_URL}`]);
+    const down = failureToError({ status: 'failed', code: 'RUN_LIMITED', error: SUSPENDED, upgrade: false });
+    expect(down.notes).toEqual([]);
+  });
+
+  it('normalized runLimit with message (balance / dry-run shape) and new reasons are passed through', () => {
+    const limit = runLimitOf({ creditsForGeneration: 10, runLimit: { code: 'RUN_LIMITED', reason: 'some_new_reason', message: 'New text.\nSecond line.', upgrade: true } });
+    expect(limit).toEqual({ code: 'RUN_LIMITED', reason: 'some_new_reason', message: 'New text.\nSecond line.', upgrade: true });
+    expect(runLimitOf({ status: 'estimate', balance: { creditsForGeneration: 3, runLimit: { message: 'Paused.' } } })?.message).toBe('Paused.');
+    expect(runLimitNotes({ code: 'RUN_LIMITED', message: 'x', upgrade: true }, { buyCreditsUrl: 'https://aitopia.ai/x' })).toEqual([
+      'Upgrading your AITOPIA plan lifts this limit: https://aitopia.ai/x',
+    ]);
+  });
+
+  it('a plain QUEUE_LIMIT_EXCEEDED (no reason, or another reason) keeps its meaning', () => {
+    for (const payload of [
+      { status: 'failed', code: 'QUEUE_LIMIT_EXCEEDED', error: 'Too many runs at once.' },
+      { status: 'failed', code: 'QUEUE_LIMIT_EXCEEDED', reason: 'concurrency', error: 'Too many runs at once.' },
+    ]) {
+      expect(runLimitOf(payload)).toBeUndefined();
+      const error = failureToError(payload);
+      expect(error.code).toBe('QUEUE_LIMIT_EXCEEDED');
+      expect(error.exitCode).toBe(1);
+      expect(error.message).toBe('Too many runs at once.');
+      expect(error.hint).toContain('aitopia status');
+    }
+    expect(exitCodeFor('QUEUE_LIMIT_EXCEEDED')).toBe(1);
+    expect(exitCodeFor('RUN_LIMITED')).toBe(6);
   });
 });

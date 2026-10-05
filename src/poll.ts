@@ -1,4 +1,4 @@
-import { CliError, OutcomeUnknownError, failureToError, networkErrorCode } from './errors.js';
+import { CliError, OutcomeUnknownError, failureToError, networkErrorCode, runLimitOf } from './errors.js';
 import { statusOf, type ToolOutcome } from './envelope.js';
 import type { CallOptions, ToolCaller } from './mcp.js';
 
@@ -51,9 +51,11 @@ function codeOf(outcome: ToolOutcome): string | undefined {
  * it says nothing about the run) and UPSTREAM_5XX whose hint says to call
  * get_run_status again (a gateway error on the poll). TIMEOUT or
  * retryable: true alone are outcomes ("run it again"), not poll trouble.
+ * A run limit is never asked again, whatever its code or retryAfterSeconds.
  */
 export function isTransientPollFailure(outcome: ToolOutcome): boolean {
   if (!outcome.isError && outcome.payload.status !== 'failed') return false;
+  if (runLimitOf(outcome.payload)) return false;
   const code = codeOf(outcome);
   if (!code || TERMINAL_CODES.has(code)) return false;
   if (code === 'RATE_LIMIT') return true;
