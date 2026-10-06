@@ -1,4 +1,4 @@
-import { CliError, UsageError } from './errors.js';
+import { UsageError } from './errors.js';
 
 export interface SchemaField {
   type?: string | string[];
@@ -51,28 +51,6 @@ export function coerceValue(field: SchemaField | undefined, value: unknown): unk
   return value;
 }
 
-/** Candidate names for the start image of image-to-video models, most specific first. */
-export const IMAGE_FIELD_CANDIDATES = [
-  'image_url',
-  'start_image_url',
-  'first_frame_image',
-  'first_frame_url',
-  'start_image',
-  'first_frame',
-  'image',
-  'input_image',
-  'input_image_url',
-  'init_image',
-  'reference_image',
-  'image_urls',
-  'reference_images',
-];
-
-export function findImageField(schema: ModelSchema): string | undefined {
-  const names = new Set(fieldNames(schema));
-  return IMAGE_FIELD_CANDIDATES.find((name) => names.has(name));
-}
-
 function unknownFieldError(modelId: string, unknown: string[], schema: ModelSchema): UsageError {
   const list = fieldNames(schema).join(', ') || '(none)';
   const label = unknown.length === 1 ? 'field' : 'fields';
@@ -97,7 +75,6 @@ export function applySetFields(
 
 /** Field names that take an aspect ratio / a duration, most common first. */
 export const ASPECT_FIELDS = ['aspect_ratio', 'image_size', 'size', 'aspect', 'ratio', 'resolution'];
-export const DURATION_FIELDS = ['duration', 'duration_seconds', 'seconds', 'length', 'video_length'];
 
 /**
  * Puts a flag's value into the schema field that takes it (e.g. --aspect →
@@ -146,44 +123,6 @@ const ASPECT_PRESETS: Record<string, string[]> = {
 export function namedAspect(raw: string, allowed: unknown[]): string | undefined {
   const names = ASPECT_PRESETS[raw.trim()];
   return names?.find((n) => allowed.includes(n));
-}
-
-export interface VideoInputOptions {
-  modelId: string;
-  prompt: string;
-  duration?: string;
-  aspect?: string;
-  imageUrl?: string;
-  sets?: Record<string, unknown>;
-}
-
-/**
- * Maps the video command's flags onto a model's input fields:
- * prompt → prompt, --duration → duration, --aspect → aspect_ratio, --image →
- * the start-image field, --set → any field.
- */
-export function buildVideoInput(schema: ModelSchema, options: VideoInputOptions): Record<string, unknown> {
-  const input: Record<string, unknown> = {};
-  if (options.prompt) input.prompt = options.prompt;
-  if (options.duration !== undefined) {
-    const [field, value] = mapFlag(schema, options.modelId, '--duration', DURATION_FIELDS, options.duration);
-    input[field] = value;
-  }
-  if (options.aspect !== undefined) {
-    const [field, value] = mapFlag(schema, options.modelId, '--aspect', ASPECT_FIELDS, options.aspect);
-    input[field] = value;
-  }
-  if (options.imageUrl !== undefined) {
-    const field = findImageField(schema);
-    if (!field) {
-      throw new UsageError(
-        `Model ${options.modelId} has no start-image field, so --image cannot be used.`,
-        `Its fields are: ${fieldNames(schema).join(', ') || '(none)'}. Pass one with --set <field>=<url>, or pick an image-to-video model.`,
-      );
-    }
-    input[field] = coerceValue(schema.properties[field], options.imageUrl);
-  }
-  return applySetFields(options.modelId, schema, input, options.sets ?? {});
 }
 
 export interface ModelSummary {
@@ -248,15 +187,3 @@ export function pickModel(models: ModelSummary[], kind: GenerationKind): string 
   return pick?.id;
 }
 
-/** pickModel for video; fails clearly when nothing fits. */
-export function pickVideoModel(models: ModelSummary[], hasImage: boolean): string {
-  const kind: GenerationKind = hasImage ? 'image-to-video' : 'text-to-video';
-  const id = pickModel(models, kind);
-  if (!id) {
-    throw new CliError(`No ${kind} model is available right now.`, 1, {
-      code: 'NO_MODEL',
-      hint: 'List models with `aitopia models --type video` and pass one with --model.',
-    });
-  }
-  return id;
-}

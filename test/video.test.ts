@@ -4,13 +4,10 @@ import { UsageError } from '../src/errors.js';
 import {
   ASPECT_FIELDS,
   applySetFields,
-  buildVideoInput,
   coerceValue,
-  findImageField,
   mapFlag,
   modelsFromPayload,
   pickModel,
-  pickVideoModel,
   schemaFromPayload,
 } from '../src/schema.js';
 import { parseSetPairs } from '../src/args.js';
@@ -19,47 +16,21 @@ const fixture = JSON.parse(readFileSync(new URL('./fixtures/video-schema.json', 
 const schema = schemaFromPayload(fixture);
 const modelId = 'acme/video-pro';
 
-describe('video input mapping', () => {
+describe('schema fields and --set', () => {
   it('reads the schema fields', () => {
     expect(Object.keys(schema.properties)).toContain('start_image_url');
     expect(schema.required).toEqual(['prompt']);
   });
 
-  it('detects the start-image field by the preferred order', () => {
-    expect(findImageField(schema)).toBe('start_image_url');
-    expect(findImageField(schemaFromPayload({ schema: { properties: { first_frame_image: {}, image: {} } } }))).toBe('first_frame_image');
-    expect(findImageField(schemaFromPayload({ schema: { properties: { prompt: {} } } }))).toBeUndefined();
-  });
-
-  it('maps prompt, duration, aspect and image, fitting values to the schema types', () => {
-    const input = buildVideoInput(schema, {
-      modelId,
-      prompt: 'a fox blinks',
-      duration: '5',
-      aspect: '9:16',
-      imageUrl: 'https://cdn.aitopia.ai/fox.png',
-      sets: parseSetPairs(['seed=7', 'generate_audio=true', 'negative_prompt=blur']),
-    });
-    expect(input).toEqual({
-      prompt: 'a fox blinks',
-      duration: '5',
-      aspect_ratio: '9:16',
-      start_image_url: 'https://cdn.aitopia.ai/fox.png',
-      seed: 7,
-      generate_audio: true,
-      negative_prompt: 'blur',
-    });
-  });
-
   it('keeps a JSON-parsed number as a string for string fields', () => {
-    const input = buildVideoInput(schema, { modelId, prompt: 'x', sets: parseSetPairs(['duration=10']) });
+    const input = applySetFields(modelId, schema, { prompt: 'x' }, parseSetPairs(['duration=10']));
     expect(input.duration).toBe('10');
   });
 
   it('lists the schema fields when a --set field is unknown', () => {
     const error = (() => {
       try {
-        buildVideoInput(schema, { modelId, prompt: 'x', sets: { resolution: '1080p' } });
+        applySetFields(modelId, schema, { prompt: 'x' }, { resolution: '1080p' });
       } catch (e) {
         return e as UsageError;
       }
@@ -71,22 +42,11 @@ describe('video input mapping', () => {
     expect(error?.hint).toContain('negative_prompt');
   });
 
-  it('rejects --image for a model without an image field', () => {
-    const textOnly = schemaFromPayload({ schema: { properties: { prompt: { type: 'string' }, duration: { type: 'integer' } } } });
-    expect(() => buildVideoInput(textOnly, { modelId, prompt: 'x', imageUrl: 'https://x/y.png' })).toThrow(/no start-image field/);
-    expect(() => buildVideoInput(textOnly, { modelId, prompt: 'x', aspect: '1:1' })).toThrow(/does not take --aspect/);
-    expect(buildVideoInput(textOnly, { modelId, prompt: 'x', duration: '6' })).toEqual({ prompt: 'x', duration: 6 });
-  });
-
   it('passes fields through when the schema lists none', () => {
     const empty = schemaFromPayload({});
     expect(applySetFields(modelId, empty, { prompt: 'p' }, { anything: 1 })).toEqual({ prompt: 'p', anything: 1 });
   });
 
-  it('wraps a single URL for array image fields', () => {
-    const multi = schemaFromPayload({ schema: { properties: { prompt: {}, image_urls: { type: 'array', items: { type: 'string' } } } } });
-    expect(buildVideoInput(multi, { modelId, prompt: 'x', imageUrl: 'https://x/y.png' }).image_urls).toEqual(['https://x/y.png']);
-  });
 });
 
 describe('coerceValue', () => {
@@ -111,13 +71,13 @@ describe('model choice', () => {
   });
 
   it('prefers a current model in server order and ignores recommended', () => {
-    expect(pickVideoModel(videos, false)).toBe('new/t2v');
-    expect(pickVideoModel(videos, true)).toBe('new/i2v');
+    expect(pickModel(videos, 'text-to-video')).toBe('new/t2v');
+    expect(pickModel(videos, 'image-to-video')).toBe('new/i2v');
   });
 
   it('falls back to the first fitting model when none is current', () => {
     const plain = modelsFromPayload({ models: [{ id: 'a', capabilities: ['text-to-video'] }, { id: 'b', capabilities: ['text-to-video'] }] });
-    expect(pickVideoModel(plain, false)).toBe('a');
+    expect(pickModel(plain, 'text-to-video')).toBe('a');
   });
 
   it('skips non-generating image models (upscalers, face restoration)', () => {
@@ -131,9 +91,6 @@ describe('model choice', () => {
     expect(pickModel([], 'audio')).toBeUndefined();
   });
 
-  it('fails clearly when no video model fits', () => {
-    expect(() => pickVideoModel([], true)).toThrow(/No image-to-video model/);
-  });
 });
 
 describe('mapFlag', () => {
