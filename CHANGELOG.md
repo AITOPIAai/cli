@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-10-06
+
+### Fixed
+
+- Windows: no more `Warning: …` line before every command. The check that the sign-in folder sits in your user profile compared path text, so a short profile name (`C:\\Users\\RUNNER~1`) never matched the long one; it now compares real paths, case-insensitively on Windows.
+- Windows: the `aitopia edit … --plan <token>` command printed by `--dry-run` is quoted for cmd.exe and PowerShell (backslash paths unquoted, spaces in double quotes).
+- Windows: a download stopped at the size cap no longer leaves a `.part` file behind (the file is closed before it is removed).
+
 ## [0.3.0] - 2026-10-06
 
 ### Added
