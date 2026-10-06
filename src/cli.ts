@@ -507,7 +507,7 @@ Saved as <file name>-<voice>.<ext> (or at -o).`,
     .description('turn speech in an audio or video file into subtitles (SRT) or text; 1 credit (2 for a video)')
     .argument('<file|url>', 'the audio or video (a local file is uploaded first) or its https URL')
     .addOption(new Option('--format <format>', 'what to save: srt subtitles, txt plain text, or json with the timings (default: from the -o extension, else srt)').choices([...TRANSCRIBE_FORMATS]))
-    .option('--language <code>', 'language spoken, e.g. en, tr, de (default: detected); a language outside Grok\'s 25 runs Whisper')
+    .option('--language <code>', 'language spoken, e.g. en, tr, de (default, or auto: detected); a language outside Grok\'s 25 runs Whisper')
     .option('--words', 'one subtitle per word (word-by-word captions); with --json, also the word timings')
     .option('--dry-run', `${DRY_RUN_HELP} (a local file is not uploaded)`)
     .option('-o, --output <path>', 'file, directory, or - for stdout (default: <file name>.srt in the current directory)')
@@ -532,6 +532,8 @@ at sentence ends and pauses (Japanese, Chinese and Thai are joined without space
 -o: a file (its extension picks the format), a directory, or - for stdout. The default
 is <file name>.srt (or .json) in the current directory; txt is printed unless -o is given.
 Without --force an existing file is kept and -1, -2 ... is added to the new name.
+Up to 2 hours per run: a file checked first (a URL whose name does not tell its type)
+and found longer is refused before anything is spent (MEDIA_TOO_LONG, exit 1).
 The folder is checked before anything is spent; if saving still fails, the transcript
 is printed instead (exit 1), so the paid result is never lost.`,
     )

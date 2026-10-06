@@ -306,8 +306,10 @@ locally: lines of at most 42 characters, two lines and about 3.5 s per cue,
 split at sentence ends and pauses (`--words`: one cue per word; Japanese,
 Chinese and Thai are joined without spaces). A `--language` outside Grok's 25
 runs `openai/whisper` instead (100+ languages, coarser timing; long segments are
-split into several cues); `pt-BR` counts as `pt`. A URL whose name does not
-tell audio from video is checked first with the free `probe_media`. The output
+split into several cues); `pt-BR` counts as `pt`, and `auto` (like leaving it out)
+lets the model detect it. A URL whose name does not tell audio from video is
+checked first with the free `probe_media`; one longer than 2 hours (the most one
+run takes) is refused there, before anything is spent. The output
 path is checked before anything is spent; if saving still fails, the transcript
 is printed so it is not lost. The format comes
 from `--format` or the `-o` extension (`.srt`, `.txt`, `.json` with the word

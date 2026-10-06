@@ -410,6 +410,7 @@ function newTools(name: string, args: Record<string, unknown>) {
       return ok({ status: 'completed', voices: voicesDb });
     case 'probe_media': {
       const url = String(args.assetUrl);
+      if (url.includes('long')) return ok({ status: 'completed', durationSec: 7300, hasVideo: false, hasAudio: true });
       if (url.includes('silent')) return ok({ status: 'completed', durationSec: 3, hasVideo: false, hasAudio: false });
       if (url.includes('still')) return ok({ status: 'completed', durationSec: 0.04, hasVideo: true, hasAudio: false, video: { codec: 'png', width: 800, height: 600 } });
       return ok({ status: 'completed', durationSec: 3.6, hasVideo: url.includes('video'), hasAudio: true });
@@ -2222,6 +2223,23 @@ describe('review fixes: voices, transcribe, cues', () => {
     expect(calls.at(-1)?.args).toEqual({ modelId: 'xai/grok-speech-to-text', input: { audio: 'https://example.com/a.mp3', timestamps: true, language: 'pt' } });
     await transcribeCommand(ctx(), 'https://example.com/a.mp3', { language: 'sw-KE', output: join(dir, 'sw.srt') });
     expect(calls.at(-1)?.args).toMatchObject({ modelId: 'openai/whisper', input: { language: 'sw' } });
+  });
+
+  it('"auto" sends no language (detected, Grok); media over 2 hours is refused before anything is spent', async () => {
+    expect(normalizeLanguage('auto')).toBeUndefined();
+    expect(normalizeLanguage(' AUTO ')).toBeUndefined();
+    expect(sttModelFor('auto')).toBe('xai/grok-speech-to-text');
+    await transcribeCommand(ctx(), 'https://example.com/a.mp3', { language: 'auto', output: join(dir, 'auto.srt') });
+    expect(calls.at(-1)?.args).toEqual({ modelId: 'xai/grok-speech-to-text', input: { audio: 'https://example.com/a.mp3', timestamps: true } });
+    calls = [];
+    const error = await failure(transcribeCommand(ctx(), 'https://example.com/media/long-take', { output: join(dir, 'long.srt') }));
+    expect(error?.code).toBe('MEDIA_TOO_LONG');
+    expect(error?.exitCode).toBe(1);
+    expect(error?.message).toContain('about 122 minutes');
+    expect(names()).toEqual(['probe_media']);
+    calls = [];
+    expect((await failure(transcribeCommand(ctx(), 'https://example.com/media/long-take', { dryRun: true })))?.code).toBe('MEDIA_TOO_LONG');
+    expect(names()).toEqual(['probe_media']);
   });
 
   it('a URL without a telling name is probed (free) first: a video is imported and its sound extracted', async () => {

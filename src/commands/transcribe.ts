@@ -6,7 +6,7 @@ import { assetsOf, isFailed, openInAitopiaUrl, type ToolOutcome } from '../envel
 import { BUY_CREDITS_URL, CliError, EXIT, UsageError, failureToError, runLimitOf } from '../errors.js';
 import type { Session } from '../mcp.js';
 import { allowHttpLoopback, creditsText, deliverEstimate, printRunLimitUnavailable, settle, startActivity } from '../results.js';
-import { buildSrt, cuesOf, normalizeLanguage, parseTranscript, sttInput, sttModelFor, WHISPER_STT_MODEL, type Transcript } from '../transcript.js';
+import { buildSrt, cuesOf, MAX_TRANSCRIBE_SECONDS, normalizeLanguage, parseTranscript, sttInput, sttModelFor, WHISPER_STT_MODEL, type Transcript } from '../transcript.js';
 import { assertLocalFile, isRemoteUrl, uploadSource } from '../upload.js';
 import { mediaTypeOf, sourceStem } from './edit.js';
 import { paidCall } from './generate.js';
@@ -139,10 +139,24 @@ export function probedKind(payload: Record<string, unknown>): 'video' | 'audio' 
   return undefined;
 }
 
-/** probe_media (free): whether a file of unknown type is a video or audio. Nothing is spent if it fails. */
+/** Refuses media longer than the server takes in one run (2 hours), before anything is spent. */
+export function checkDuration(durationSec: unknown, source: string): void {
+  if (typeof durationSec !== 'number' || !Number.isFinite(durationSec) || durationSec <= MAX_TRANSCRIBE_SECONDS) return;
+  throw new CliError(`${source} is about ${Math.round(durationSec / 60)} minutes; transcribe takes at most 2 hours per run. Nothing was spent.`, EXIT.FAILED, {
+    code: 'MEDIA_TOO_LONG',
+    hint: 'Split it into parts of at most 2 hours first (e.g. with `aitopia run trim_video`), transcribe each part, and shift each part\'s cue times by its start.',
+    data: { durationSec, maxDurationSec: MAX_TRANSCRIBE_SECONDS },
+  });
+}
+
+/**
+ * probe_media (free): whether a file of unknown type is a video or audio, and
+ * that it is not over 2 hours. Nothing is spent if it fails.
+ */
 async function probeKind(session: Session, url: string, source: string): Promise<'video' | 'audio'> {
   const outcome = await session.callTool('probe_media', { assetUrl: url });
   if (isFailed(outcome)) throw failureToError(outcome.payload);
+  checkDuration(outcome.payload.durationSec, source);
   const kind = probedKind(outcome.payload);
   if (!kind) {
     throw new CliError(`${source} has no sound to transcribe.`, EXIT.FAILED, {
@@ -169,7 +183,9 @@ async function priceNote(session: Session, modelId: string, audioUrl: string, la
  * aitopia transcribe <file|url>: speech to text with xai/grok-speech-to-text
  * (word timings, cues built here), or openai/whisper for a --language Grok
  * does not cover. A video's sound is extracted first (audio_tools extract).
- * A URL whose type the name does not tell is probed first (free).
+ * A URL whose type the name does not tell is probed first (free); media
+ * the probe finds longer than 2 hours is refused before anything is spent
+ * (a duration not known here is left to the models).
  */
 export async function transcribeCommand(ctx: Context, source: string, options: TranscribeOptions): Promise<void> {
   if (!source) throw new UsageError('Give the audio or video to transcribe, e.g. aitopia transcribe talk.mp3.');

@@ -1,6 +1,8 @@
 // Speech-to-text results: reading the model output and building SRT cues.
-// Mirrors the server's transcribe_media rules (scotty src/lib/creator/transcribe.ts):
-// a cue is at most 2 lines of 42 characters and 3.5 s, and breaks after
+// The CLI runs the speech models itself through run_model (not a transcribe
+// tool). Its model choice, language handling and 2-hour limit follow the
+// server's speech-to-text rules (scotty src/lib/creator/transcribe.ts), and so
+// do its cues: at most 2 lines of 42 characters and 3.5 s, broken after
 // sentence punctuation or on a pause longer than 0.6 s.
 
 export const GROK_STT_MODEL = 'xai/grok-speech-to-text';
@@ -8,7 +10,7 @@ export const WHISPER_STT_MODEL = 'openai/whisper';
 
 /** Languages Grok Speech-to-Text takes (its model schema); any other one runs Whisper. */
 export const GROK_LANGUAGES = new Set([
-  'auto', 'ar', 'cs', 'da', 'de', 'en', 'es', 'fa', 'fil', 'fr', 'hi', 'id', 'it', 'ja',
+  'ar', 'cs', 'da', 'de', 'en', 'es', 'fa', 'fil', 'fr', 'hi', 'id', 'it', 'ja',
   'ko', 'mk', 'ms', 'nl', 'pl', 'pt', 'ro', 'ru', 'sv', 'th', 'tr', 'vi',
 ]);
 
@@ -33,13 +35,17 @@ export interface Transcript {
   segments: TimedText[];
 }
 
+/** Longest media transcribed in one run (the server's limit): 2 hours. */
+export const MAX_TRANSCRIBE_SECONDS = 2 * 60 * 60;
+
 /**
  * A --language as the models take it: a code in lower case without its region
  * ("pt-BR" -> "pt", "EN" -> "en"); a name ("English", for Whisper) as written.
+ * "auto" (any case) means detect it: no language is sent.
  */
 export function normalizeLanguage(language: string | undefined): string | undefined {
   const value = language?.trim();
-  if (!value) return undefined;
+  if (!value || value.toLowerCase() === 'auto') return undefined;
   const code = /^([a-z]{2,3})(?:[-_][a-z0-9]{2,8})*$/i.exec(value);
   return code ? (code[1] as string).toLowerCase() : value;
 }
