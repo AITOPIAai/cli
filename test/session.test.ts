@@ -2695,3 +2695,22 @@ describe('named edit tools', () => {
     expect(error?.notes).toContain('Last finished file: https://cdn.aitopia.ai/changed-voice.mp3');
   });
 });
+
+describe('upload into a project', () => {
+  it('upload --project/--folder resolves the names and sends projectId/folderId with each upload', async () => {
+    const { uploadCommand } = await import('../src/commands/upload.js');
+    const small = join(dir, 'small.png');
+    writeFileSync(small, 'png');
+    await uploadCommand(ctx(true), [small, 'https://example.com/clip.mp4'], { project: 'Spring campaign', folder: 'Banners' });
+    expect(calls.find((c) => c.name === 'upload_asset')?.args).toMatchObject({ fileName: 'small.png', projectId: 'p-4444', folderId: 'f-1' });
+    expect(calls.find((c) => c.name === 'create_upload_link')?.args).toEqual({ sourceUrl: 'https://example.com/clip.mp4', projectId: 'p-4444', folderId: 'f-1' });
+    expect(JSON.parse(stdout.text)).toMatchObject({ status: 'completed' });
+    calls = [];
+    const missing = await failure(uploadCommand(ctx(), [small], { project: 'Nope' }));
+    expect(missing?.code).toBe('PROJECT_NOT_FOUND');
+    expect(names()).not.toContain('upload_asset');
+    calls = [];
+    expect((await failure(uploadCommand(ctx(), [small], { folder: 'Banners' })))?.exitCode).toBe(2);
+    expect(calls).toEqual([]);
+  });
+});

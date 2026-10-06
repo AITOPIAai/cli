@@ -1,6 +1,7 @@
 import { withSession, type Context } from '../context.js';
 import { CliError, UsageError, toCliError } from '../errors.js';
 import { inFlight } from '../interrupt.js';
+import { checkScopeOptions, resolveScope, type ScopeOptions } from '../resolve.js';
 import { allowHttpLoopback, settle } from '../results.js';
 import { uploadSource, type UploadResult } from '../upload.js';
 
@@ -9,10 +10,13 @@ import { uploadSource, type UploadResult } from '../upload.js';
  * command then exits with the first failure's code, and --json still lists
  * every upload that worked.
  */
-export async function uploadCommand(ctx: Context, sources: string[]): Promise<void> {
+export async function uploadCommand(ctx: Context, sources: string[], options: ScopeOptions = {}): Promise<void> {
   if (sources.length === 0) throw new UsageError('Give at least one file or URL to upload.');
+  checkScopeOptions(options);
   const { out } = ctx;
   await withSession(ctx, async (session) => {
+    // A project that does not exist stops here, before any upload.
+    const scope = await resolveScope(ctx, session, options);
     const results: UploadResult[] = [];
     const failures: Array<{ source: string; error: CliError }> = [];
     for (const source of sources) {
@@ -22,6 +26,7 @@ export async function uploadCommand(ctx: Context, sources: string[]): Promise<vo
           uploadSource(session.callTool, source, {
             wait: (o) => settle(ctx, session, o, `Importing ${source}`),
             allowHttpLoopback: allowHttpLoopback(ctx.serverUrl),
+            scope,
           }),
         );
         results.push(result);

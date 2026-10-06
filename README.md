@@ -80,6 +80,7 @@ Upload files and get hosted URLs you can pass to any tool:
 
 ```sh
 aitopia upload photo.jpg clip.mp4
+aitopia upload shot-*.png --project "Spring campaign" --folder Banners
 ```
 
 Pick a model yourself (and, for images and audio, set any of its fields):
@@ -371,7 +372,7 @@ lists the closest current models (`Did you mean: ...`).
 | `aitopia voices [list]` | List your cloned voices |
 | `aitopia voices create <name> [sample] --consent [--language l] [--dry-run]` | Clone a voice (150 credits), or re-create / finish one of yours |
 | `aitopia voices delete <voice> [--yes] [--force]` | Delete a voice |
-| `aitopia upload <file\|url...>` | Upload files, print their URLs |
+| `aitopia upload <file\|url...> [--project p [--folder f]]` | Upload files, print their URLs (kept in a project with `--project`) |
 | `aitopia run <tool> [--json-args '{...}' \| --args-file f] [--set k=v] [--dry-run]` | Call any tool |
 | `aitopia tools [--q text]` | List the tools available to you |
 | `aitopia status <runToken...> [--wait]` | Check or wait for long runs (up to 12 tokens) |

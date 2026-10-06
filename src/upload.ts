@@ -107,6 +107,8 @@ export interface UploadOptions {
   wait?: WaitFn;
   allowHttpLoopback?: boolean;
   sleep?: (ms: number) => Promise<void>;
+  /** Save the file in this project (and folder): projectId / folderId on upload_asset and create_upload_link. */
+  scope?: { projectId?: string; folderId?: string };
 }
 
 /**
@@ -120,8 +122,9 @@ export async function uploadSource(
   options: UploadOptions = {},
 ): Promise<UploadResult> {
   const wait = options.wait ?? (async (o: ToolOutcome) => o);
+  const scope = options.scope ?? {};
   if (isRemoteUrl(source)) {
-    const outcome = await wait(await call('create_upload_link', { sourceUrl: source }));
+    const outcome = await wait(await call('create_upload_link', { sourceUrl: source, ...scope }));
     return { source, assetUrl: completedAssetUrl(outcome, source), outcome };
   }
 
@@ -131,11 +134,11 @@ export async function uploadSource(
 
   if (size <= INLINE_UPLOAD_MAX_BYTES) {
     const contentBase64 = readFileSync(path).toString('base64');
-    const outcome = await call('upload_asset', { fileName, contentBase64 });
+    const outcome = await call('upload_asset', { fileName, contentBase64, ...scope });
     return { source, fileName, assetUrl: completedAssetUrl(outcome, source), outcome };
   }
 
-  const link = await call('create_upload_link', { fileName, ...(contentType ? { contentType } : {}) });
+  const link = await call('create_upload_link', { fileName, ...(contentType ? { contentType } : {}), ...scope });
   if (isFailed(link)) throw failureToError(link.payload, { buyCreditsUrl: buyCreditsUrl(link) });
   const uploadUrl = link.payload.uploadUrl;
   if (typeof uploadUrl !== 'string') throw new CliError('The server did not return an upload link.');

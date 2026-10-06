@@ -753,11 +753,25 @@ The voice provider's own copy cannot be deleted from AITOPIA and may remain unti
     )
     .action(action((g, voice, opts) => voicesDeleteCommand(createContext(g), voice as string, opts as { yes?: boolean; force?: boolean })));
 
-  program
+  const upload = program
     .command('upload')
     .description('upload files (or import public URLs) and print their hosted URLs')
     .argument('<file...>', 'local files or https URLs')
-    .action(action((g, files) => uploadCommand(createContext(g), files as string[])));
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia upload photo.jpg clip.mp4
+  $ aitopia upload https://example.com/logo.png
+  $ aitopia upload shot-*.png --project "Spring campaign" --folder Banners
+
+Uploading is free. --project / --folder keep the files in that project (checked
+before anything is uploaded).`,
+    );
+  upload
+    .option('--project <name|id>', 'keep the files in this project (a name or id from `aitopia projects`)')
+    .option('--folder <name|id>', 'in this folder of --project')
+    .action(action((g, files, opts) => uploadCommand(createContext(g), files as string[], opts as { project?: string; folder?: string })));
 
   addDeliveryOptions(
     program

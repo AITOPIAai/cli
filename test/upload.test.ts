@@ -43,6 +43,15 @@ describe('uploadSource', () => {
     expect(result.assetUrl).toBe('https://cdn.aitopia.ai/big.mp4');
   });
 
+  it('asks for the upload link with the project and folder when a scope is given', async () => {
+    const file = join(dir, 'big.mp4');
+    writeFileSync(file, Buffer.alloc(INLINE_UPLOAD_MAX_BYTES + 1, 1));
+    const call = vi.fn().mockResolvedValue(ok({ status: 'link_created', uploadUrl: 'https://mcp.aitopia.ai/u/abc', maxBytes: 95 * 1024 * 1024 }));
+    const fetchFn = (async () => new Response(JSON.stringify({ assetUrl: 'https://cdn.aitopia.ai/big.mp4' }), { status: 200 })) as unknown as typeof fetch;
+    await uploadSource(call, file, { fetchFn, scope: { projectId: 'p-1', folderId: 'f-1' } });
+    expect(call).toHaveBeenCalledWith('create_upload_link', { fileName: 'big.mp4', contentType: 'video/mp4', projectId: 'p-1', folderId: 'f-1' });
+  });
+
   it('refuses a file above maxBytes before uploading', async () => {
     const file = join(dir, 'huge.mov');
     writeFileSync(file, Buffer.alloc(200 * 1024));
