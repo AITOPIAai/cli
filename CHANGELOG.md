@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- Windows: no more `Warning: …` line before every command. The check that the sign-in folder sits in your user profile compared path text, so a short profile name (`C:\\Users\\RUNNER~1`) never matched the long one; it now compares real paths, case-insensitively on Windows.
+- Windows: no more `Warning: …` line before every command. The check that the sign-in folder sits in your user profile compared path text, so a short profile name (`C:\Users\RUNNER~1`) never matched the long one; it now compares real paths, case-insensitively on Windows.
 - Windows: the `aitopia edit … --plan <token>` command printed by `--dry-run` is quoted for cmd.exe and PowerShell (backslash paths unquoted, spaces in double quotes).
 - Windows: a download stopped at the size cap no longer leaves a `.part` file behind (the file is closed before it is removed).
 
