@@ -1,11 +1,11 @@
-import { joinWords, parseSetPairs } from '../args.js';
+import { joinWords } from '../args.js';
 import { withSession, type Context } from '../context.js';
-import { CliError, UsageError } from '../errors.js';
-import { allowHttpLoopback, deliver, deliverEstimate, settle, startActivity } from '../results.js';
+import { isFailed } from '../envelope.js';
+import { UsageError } from '../errors.js';
+import { allowHttpLoopback } from '../results.js';
 import { checkScopeOptions, resolveScope } from '../resolve.js';
-import { buildVideoInput, findImageField } from '../schema.js';
 import { assertLocalFile, isRemoteUrl, uploadSource } from '../upload.js';
-import { announceModel, chooseModel, fetchSchema, paidCall, type GenerateOptions } from './generate.js';
+import { announceModel, runToolAndDeliver, type GenerateOptions } from './generate.js';
 
 /** Stands in for a local start image on --dry-run (the price does not depend on it; nothing is uploaded). */
 export const DRY_RUN_IMAGE_URL = 'https://example.invalid/start-image';
@@ -14,32 +14,39 @@ export interface VideoOptions extends GenerateOptions {
   image?: string;
   duration?: string;
   aspect?: string;
+  resolution?: string;
+  /** --audio / --no-audio: native sound, on models that make it. */
+  audio?: boolean;
 }
 
+/** --duration as generate_video takes it: a positive number of seconds. */
+export function parseDuration(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const n = Number(value.trim().replace(/s$/i, ''));
+  if (!value.trim() || !Number.isFinite(n) || n <= 0) throw new UsageError(`--duration must be a number of seconds, e.g. 5, got "${value}".`);
+  return n;
+}
+
+/**
+ * aitopia video: the generate_video tool. AITOPIA picks a fitting video model
+ * unless --model is given; a field the model lacks is refused by the server
+ * with the allowed values (nothing is spent).
+ */
 export async function videoCommand(ctx: Context, words: string[], options: VideoOptions): Promise<void> {
   const prompt = joinWords(words);
   if (!prompt) throw new UsageError('A prompt is required, e.g. aitopia video "waves at sunset, slow pan".');
-  const sets = parseSetPairs(options.set);
+  if (options.set && options.set.length > 0) {
+    throw new UsageError('--set is not available for video: it takes --image, --duration, --aspect, --resolution and --audio.',
+      'For other model fields run the model directly: aitopia run run_model --set modelId=<id> --set input=\'{"prompt":"..."}\' (fields: `aitopia model <id>`).',
+    );
+  }
+  const duration = parseDuration(options.duration);
   checkScopeOptions(options);
   const { out } = ctx;
 
   await withSession(ctx, async (session) => {
     // Before anything else: a project that does not exist stops here.
     const scope = await resolveScope(ctx, session, options);
-    const kind = options.image !== undefined ? 'image-to-video' : 'text-to-video';
-    const modelId = options.model ?? (await chooseModel(session, kind));
-    if (!modelId) {
-      throw new CliError(`No ${kind} model is available right now.`, 1, {
-        code: 'NO_MODEL',
-        hint: 'List models with `aitopia models --type video` and pass one with --model.',
-      });
-    }
-    if (!options.model) announceModel(ctx, modelId);
-    const schema = await fetchSchema(session, modelId);
-
-    // Check every flag against the schema before uploading anything.
-    const placeholder = options.image !== undefined ? 'https://example.invalid/image' : undefined;
-    buildVideoInput(schema, { modelId, prompt, duration: options.duration, aspect: options.aspect, imageUrl: placeholder, sets });
 
     let imageUrl: string | undefined;
     if (options.image !== undefined) {
@@ -52,27 +59,25 @@ export async function videoCommand(ctx: Context, words: string[], options: Video
         out.note(`Uploading ${options.image}...`);
         imageUrl = (await uploadSource(session.callTool, options.image, { allowHttpLoopback: allowHttpLoopback(ctx.serverUrl) })).assetUrl;
       }
-      out.debug(`start image field: ${findImageField(schema)}`);
     }
 
-    const input = buildVideoInput(schema, { modelId, prompt, duration: options.duration, aspect: options.aspect, imageUrl, sets });
-    const args: Record<string, unknown> = { modelId, input, ...scope };
+    const args: Record<string, unknown> = { prompt, ...scope };
+    if (imageUrl) args.imageUrl = imageUrl;
+    if (options.model) {
+      args.modelId = options.model;
+      args.allowAnyModel = true;
+    }
+    if (duration !== undefined) args.duration = duration;
+    if (options.aspect !== undefined) args.aspectRatio = options.aspect;
+    if (options.resolution !== undefined) args.resolution = options.resolution;
+    if (options.audio !== undefined) args.generateAudio = options.audio;
     if (options.name) args.assetName = options.name;
-    if (options.model) args.allowAnyModel = true;
     if (options.dryRun) args.dryRun = true;
 
-    const activity = startActivity(ctx, options.dryRun ? 'Checking the price' : 'Generating video');
-    try {
-      const first = await paidCall(options.dryRun, () => session.callTool('run_model', args, { ...activity.callOptions, paid: !options.dryRun }));
-      if (options.dryRun) {
-        activity.stop();
-        deliverEstimate(ctx, first);
-        return;
-      }
-      const done = await settle(ctx, session, first, 'Generating video', activity);
-      await deliver(ctx, done, options, { expectFiles: true, prompt: options.name ?? prompt });
-    } finally {
-      activity.stop();
-    }
+    await runToolAndDeliver(ctx, session, 'generate_video', args, options, 'Generating video', options.name ?? prompt, (first) => {
+      // The model AITOPIA picked (when --model was not given).
+      const modelId = first.payload.modelId;
+      if (!options.model && !isFailed(first) && typeof modelId === 'string' && modelId) announceModel(ctx, modelId);
+    });
   });
 }

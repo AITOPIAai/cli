@@ -168,3 +168,35 @@ export async function generateAndDeliver(
     activity.stop();
   }
 }
+
+/**
+ * One named tool (generate_video, upscale_image, ...): call it (or price it with
+ * dryRun), follow a runToken with live progress, then save the files.
+ * `args` already holds dryRun when it is a price check.
+ */
+export async function runToolAndDeliver(
+  ctx: Context,
+  session: Session,
+  tool: string,
+  args: Record<string, unknown>,
+  options: DeliverOptions & { dryRun?: boolean },
+  label: string,
+  name: string,
+  /** Sees the first answer (e.g. to print the model the server picked). */
+  onFirst?: (outcome: ToolOutcome) => void,
+): Promise<void> {
+  const activity = startActivity(ctx, options.dryRun ? 'Checking the price' : label);
+  try {
+    const first = await paidCall(options.dryRun, () => session.callTool(tool, args, { ...activity.callOptions, paid: !options.dryRun }));
+    onFirst?.(first);
+    if (options.dryRun) {
+      activity.stop();
+      deliverEstimate(ctx, first);
+      return;
+    }
+    const done = await settle(ctx, session, first, label, activity);
+    await deliver(ctx, done, options, { expectFiles: true, prompt: name });
+  } finally {
+    activity.stop();
+  }
+}

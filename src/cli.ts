@@ -257,13 +257,30 @@ or outcome unknown, 6 runs limited on your account.`,
       .command('video')
       .description('generate a video (from text, or from a start image)')
       .argument('<prompt...>', 'what should happen')
-      .option('--model <id>', 'video model id (default: a current AITOPIA video model, printed on use)')
+      .option('--model <id>', 'video model id (default: AITOPIA picks one that supports what you asked, printed on use)')
       .option('--image <file|url>', 'start image (a local file is uploaded first)')
-      .option('--duration <seconds>', 'length in seconds')
-      .option('--aspect <ratio>', 'aspect ratio, e.g. 16:9, 9:16')
+      .option('--duration <seconds>', 'length in seconds, e.g. 5, 8, 10 (one the model supports)')
+      .option('--aspect <ratio>', 'aspect ratio, e.g. 16:9, 9:16, 1:1')
+      .option('--resolution <r>', 'resolution, e.g. 720p, 1080p')
+      .option('--audio', 'with native sound (models that make it)')
+      .option('--no-audio', 'without sound')
       .option('--name <name>', 'name for the saved asset')
-      .option('--set <key=value>', 'any model field (repeatable, value parsed as JSON)', collect)
-      .option('--dry-run', `${DRY_RUN_HELP} (a local --image is not uploaded)`),
+      .addOption(new Option('--set <key=value>').argParser(collect).hideHelp())
+      .option('--dry-run', `${DRY_RUN_HELP} (a local --image is not uploaded)`)
+      .addHelpText(
+        'after',
+        `
+Examples:
+  $ aitopia video "waves at sunset, slow pan"
+  $ aitopia video "the fox turns its head and blinks" --image fox.png --duration 5
+  $ aitopia video "a drone shot over a harbor" --aspect 9:16 --resolution 1080p --audio
+  $ aitopia video "slow pan over a harbor" --model <model-id> --dry-run
+
+Without --model AITOPIA picks a video model that supports what you asked (printed
+on use). A value the model does not support (a duration, aspect or resolution) is
+refused with the allowed values; nothing is spent. Fields other than these flags:
+run the model with \`aitopia run run_model\` (see \`aitopia model <id>\`).`,
+      ),
   );
   addScopeOptions(video).action(action((g, words, opts) => videoCommand(createContext(g), words as string[], opts as Parameters<typeof videoCommand>[2])));
 

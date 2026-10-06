@@ -632,6 +632,19 @@ function tool(name: string, args: Record<string, unknown>) {
     }
     case 'upload_asset':
       return ok({ status: 'completed', assetUrl: 'https://cdn.aitopia.ai/uploaded.png', assetName: String(args.fileName), contentType: 'image/png', sizeBytes: 8 });
+    case 'generate_video': {
+      const modelId = typeof args.modelId === 'string' ? args.modelId : args.imageUrl ? 'acme/i2v' : 'bytedance/seedance-1-lite';
+      if (args.duration === 7) {
+        return fail({ code: 'INVALID_INPUT', field: 'duration', error: `${modelId} does not support duration 7. Allowed: 5, 10. Nothing was spent.`, retryable: false });
+      }
+      if (args.dryRun === true) {
+        if (modelId === 'acme/unpriced') {
+          return fail({ code: 'PRICE_UNKNOWN', error: 'This model lists no price, so it cannot be estimated before it runs. Nothing was spent.', retryable: false, modelId, hint: 'Run it without dryRun only if the user accepts an unknown price.' });
+        }
+        return estimate(50, '5 s x 10 credits per second at 720p.', modelId);
+      }
+      return ok({ status: 'running', modelId, jobId: 'job-1', runToken: 'run-1', progress: null, queuePosition: null, etaSeconds: null, pollAfterMs: 2000 });
+    }
     case 'run_model':
       if (args.dryRun === true) {
         if (args.modelId === 'acme/unpriced') {
@@ -935,30 +948,50 @@ describe('commands against a local MCP server', () => {
     expect(error.data.assetUrls).toEqual([`${base}/files/abc.png`]);
   });
 
-  it('video picks a current model, uploads a local image, runs the model once and polls to the result', async () => {
+  it('video calls generate_video: uploads a local image, prints the model AITOPIA picked and polls to the result', async () => {
     const image = join(dir, 'fox.png');
     writeFileSync(image, 'tiny png');
     const out = join(dir, 'clips');
-    await videoCommand(ctx(), ['the', 'fox', 'blinks'], { image, duration: '5', output: `${out}/` });
-    expect(calls.map((c) => c.name)).toEqual(['list_models', 'get_model_schema', 'upload_asset', 'run_model', 'get_run_status']);
-    expect(calls[3]?.args).toEqual({
-      modelId: 'acme/i2v',
-      input: { prompt: 'the fox blinks', duration: 5, start_image_url: 'https://cdn.aitopia.ai/uploaded.png' },
+    await videoCommand(ctx(), ['the', 'fox', 'blinks'], { image, duration: '5', aspect: '9:16', resolution: '1080p', audio: false, output: `${out}/` });
+    expect(calls.map((c) => c.name)).toEqual(['upload_asset', 'generate_video', 'get_run_status']);
+    expect(calls[1]?.args).toEqual({
+      prompt: 'the fox blinks',
+      imageUrl: 'https://cdn.aitopia.ai/uploaded.png',
+      duration: 5,
+      aspectRatio: '9:16',
+      resolution: '1080p',
+      generateAudio: false,
     });
     // The paid call asks for live progress; the status check long-polls on the server.
-    expect(calls[3]?.progressToken).toBeDefined();
-    expect(calls[4]?.args).toEqual({ runToken: 'run-1', wait: 20 });
+    expect(calls[1]?.progressToken).toBeDefined();
+    expect(calls[2]?.args).toEqual({ runToken: 'run-1', wait: 20 });
+    expect(stderr.text).toContain('Model: acme/i2v');
     // Named after the prompt, not the provider's file id.
     expect(readdirSync(out)).toEqual(['the-fox-blinks.mp4']);
   }, 15_000);
 
-  it('run_model with assetUrl null finds the file inside output', async () => {
+  it('video --model passes modelId with allowAnyModel; a finished run with assetUrl null finds the file inside output', async () => {
     runOutput = { assetUrl: null, output: { video: { url: `${base}/files/nested.mp4` }, seed: 1 } };
     const out = join(dir, 'nested');
-    await videoCommand(ctx(), ['waves'], { model: 'acme/i2v', output: `${out}/` });
+    await videoCommand(ctx(), ['waves'], { model: 'acme/i2v', audio: true, output: `${out}/` });
     expect(readdirSync(out)).toEqual(['waves.mp4']);
-    expect(calls[1]?.args.allowAnyModel).toBe(true);
+    expect(calls[0]?.args).toEqual({ prompt: 'waves', modelId: 'acme/i2v', allowAnyModel: true, generateAudio: true });
+    expect(stderr.text).not.toContain('Model:');
   }, 15_000);
+
+  it('video refuses --set and a bad --duration before connecting; a value the model lacks is the server\'s refusal', async () => {
+    const set = await failure(videoCommand(ctx(), ['waves'], { set: ['seed=7'] }));
+    expect(set?.exitCode).toBe(2);
+    expect(set?.message).toContain('--set is not available for video');
+    expect(set?.hint).toContain('aitopia run run_model');
+    const bad = await failure(videoCommand(ctx(), ['waves'], { duration: 'long' }));
+    expect(bad?.exitCode).toBe(2);
+    expect(calls).toEqual([]);
+    const refused = await failure(videoCommand(ctx(), ['waves'], { duration: '7' }));
+    expect(refused?.exitCode).toBe(1);
+    expect(refused?.code).toBe('INVALID_INPUT');
+    expect(refused?.message).toContain('Allowed: 5, 10');
+  });
 
   it('warns and prints the result when a finished run has no file', async () => {
     runOutput = { assetUrl: null, output: { status: 'done' } };
@@ -1131,12 +1164,12 @@ describe('progress, dry runs and new error codes', () => {
     expect(JSON.parse(stdout.text)).toMatchObject({ status: 'estimate', credits: 4, affordable: true, balance: { creditsForGeneration: 8951 } });
   });
 
-  it('video --dry-run does not upload a local start image and sends dryRun to run_model', async () => {
+  it('video --dry-run does not upload a local start image and sends dryRun to generate_video', async () => {
     const image = join(dir, 'fox.png');
     writeFileSync(image, 'tiny png');
     await videoCommand(ctx(), ['the', 'fox', 'blinks'], { image, model: 'acme/i2v', dryRun: true });
-    expect(calls.map((c) => c.name)).toEqual(['get_model_schema', 'run_model']);
-    expect(calls[1]?.args).toMatchObject({ dryRun: true, input: { start_image_url: 'https://example.invalid/start-image' } });
+    expect(calls.map((c) => c.name)).toEqual(['generate_video']);
+    expect(calls[0]?.args).toMatchObject({ dryRun: true, imageUrl: 'https://example.invalid/start-image' });
     expect(stdout.text).toContain('Estimate: 50 credits');
   });
 
@@ -1774,7 +1807,7 @@ describe('projects', () => {
     expect(calls.find((c) => c.name === 'edit_media')?.args).toMatchObject({ projectId: 'p-1111' });
     calls = [];
     await videoCommand(ctx(), ['waves'], { model: 'acme/i2v', project: 'Podcast', dryRun: true });
-    expect(calls.find((c) => c.name === 'run_model')?.args).toMatchObject({ projectId: 'p-1111' });
+    expect(calls.find((c) => c.name === 'generate_video')?.args).toMatchObject({ projectId: 'p-1111' });
   });
 
   it('move: URLs and ids into a project folder; files not found are listed and exit 1', async () => {

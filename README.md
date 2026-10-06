@@ -65,9 +65,10 @@ A video from a local image (the image is uploaded first):
 aitopia video "the fox turns its head and blinks" --image fox.png -o fox.mp4
 ```
 
-`--duration` and `--aspect` are mapped onto the model's own fields; if the model
-has no such field (or does not accept the value), the CLI stops before
-generating and lists what the model takes.
+Without `--model`, AITOPIA picks a video model that supports what you asked
+(printed as `Model: ...`). `--duration`, `--aspect`, `--resolution` and
+`--audio` / `--no-audio` (native sound) go to that model; a value it does not
+support is refused with the allowed values, and nothing is spent.
 
 Speech or sound:
 
@@ -81,14 +82,18 @@ Upload files and get hosted URLs you can pass to any tool:
 aitopia upload photo.jpg clip.mp4
 ```
 
-Pick a model yourself and set any of its fields:
+Pick a model yourself (and, for images and audio, set any of its fields):
 
 ```sh
 aitopia models --type video              # current models first
 aitopia models --type video --all        # include models outside the recommended set
 aitopia model <model-id>                 # shows its input fields
-aitopia video "waves at sunset" --model <model-id> --duration 5 --set <field>=<value>
+aitopia video "waves at sunset" --model <model-id> --duration 5 --resolution 1080p
+aitopia image "a paper boat" --model <model-id> --set <field>=<value>
 ```
+
+`video` takes no `--set`; to set other fields of a video model, run it with
+`aitopia run run_model --set modelId=<model-id> --set input='{"prompt":"..."}'`.
 
 Run any AITOPIA tool (see `aitopia tools`):
 
@@ -320,7 +325,7 @@ lists the closest current models (`Did you mean: ...`).
 | `aitopia agent <id\|name>` | Show a store agent's description, price and input fields |
 | `aitopia agent run <id\|name> [--set k=v] [--input json\|@file] [--dry-run] [--no-wait]` | Run a store agent (local files uploaded first, files saved) |
 | `aitopia image <prompt> [--model id] [--aspect r] [-n 1-4] [--set k=v] [--dry-run]` | Generate images |
-| `aitopia video <prompt> [--model id] [--image file\|url] [--duration s] [--aspect r] [--set k=v] [--dry-run]` | Generate a video |
+| `aitopia video <prompt> [--model id] [--image file\|url] [--duration s] [--aspect r] [--resolution r] [--audio \| --no-audio] [--dry-run]` | Generate a video (AITOPIA picks the model unless `--model`) |
 | `aitopia audio <text> [--model id \| --voice name] [--emotion mood] [--set k=v] [--dry-run]` | Generate speech, music or sound (`--voice`: in one of your cloned voices; `--emotion`: in a mood) |
 | `aitopia edit <file\|url> <instruction> [--dry-run] [--plan token] [--max-credits n] [--keep-steps]` | Edit a file in plain words (planned steps, shown first) |
 | `aitopia batch <file> [--dry-run] [--wait \| --no-wait]` | Make up to 12 images, videos and audio clips from a JSON file |

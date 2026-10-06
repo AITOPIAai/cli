@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `aitopia video` calls the `generate_video` tool: without `--model` AITOPIA picks a video model that supports what you asked (your preferred one, then the ones it runs most successfully) and the CLI prints it as `Model: ...`; `--model` is sent as `modelId` (with `allowAnyModel`). `--image`, `--duration` (a positive number of seconds), `--aspect`, `--name`, `--dry-run`, `-o`, `--project` and `--folder` work as before; a value the model does not support is refused by the server with the allowed values (exit 1, nothing spent). `--set` is no longer accepted for `video` (exit 2, with a hint to use `aitopia run run_model`).
+
+### Added
+
+- `aitopia video --resolution <r>` (e.g. `720p`, `1080p`) and `--audio` / `--no-audio` (native sound, on models that make it).
+
 ### Removed
 
 - `list_connections` from the help examples and the README (integrations are not offered), and the hint that pointed a third-party sign-in failure at it: such a failure still exits 1 (not 3) and keeps the server's own hint.
