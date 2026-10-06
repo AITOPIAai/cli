@@ -34,6 +34,7 @@ import {
 import { voicesCreateCommand, voicesDeleteCommand, voicesListCommand } from '../src/commands/voices.js';
 import { transcribeCommand } from '../src/commands/transcribe.js';
 import { agentRunCommand, agentShowCommand, agentsCommand, DRY_RUN_FILE_URL } from '../src/commands/agents.js';
+import { motionCommand, outpaintCommand, reframeCommand, removeBgCommand, upscaleCommand, voiceChangeCommand } from '../src/commands/named.js';
 import { matchNamed } from '../src/resolve.js';
 import { buildSrt, cuesFromWords, cuesOf, normalizeLanguage, splitSegment, sttModelFor, wrapCue } from '../src/transcript.js';
 
@@ -410,6 +411,7 @@ function newTools(name: string, args: Record<string, unknown>) {
     case 'probe_media': {
       const url = String(args.assetUrl);
       if (url.includes('silent')) return ok({ status: 'completed', durationSec: 3, hasVideo: false, hasAudio: false });
+      if (url.includes('still')) return ok({ status: 'completed', durationSec: 0.04, hasVideo: true, hasAudio: false, video: { codec: 'png', width: 800, height: 600 } });
       return ok({ status: 'completed', durationSec: 3.6, hasVideo: url.includes('video'), hasAudio: true });
     }
     case 'create_upload_link':
@@ -644,6 +646,32 @@ function tool(name: string, args: Record<string, unknown>) {
         return estimate(50, '5 s x 10 credits per second at 720p.', modelId);
       }
       return ok({ status: 'running', modelId, jobId: 'job-1', runToken: 'run-1', progress: null, queuePosition: null, etaSeconds: null, pollAfterMs: 2000 });
+    }
+    case 'upscale_image':
+    case 'upscale_video':
+    case 'remove_background':
+    case 'outpaint_image':
+    case 'reframe':
+    case 'motion_control':
+    case 'voice_change': {
+      const url = String(args.assetUrl ?? args.characterImageUrl);
+      const video = name === 'upscale_video' || name === 'motion_control' || (name !== 'upscale_image' && /\.(mp4|mov)$/.test(url));
+      const steps = name === 'voice_change' && /\.mp4$/.test(url)
+        ? [
+            { index: 1, kind: 'ffmpeg', id: 'audio_tools', displayName: 'Extract audio', credits: 1 },
+            { index: 2, kind: 'model', id: 'elevenlabs/voice-changer', displayName: 'ElevenLabs Voice Changer', credits: 6 },
+            { index: 3, kind: 'ffmpeg', id: 'mix_audio_layers', displayName: 'Put the audio back', credits: 1 },
+          ]
+        : [{ index: 1, kind: 'model', id: `pinned/${name}`, displayName: `Pinned ${name}`, credits: 8 }];
+      const total = steps.reduce((sum, st) => sum + st.credits, 0);
+      if (args.dryRun === true) {
+        return ok({ status: 'estimate', dryRun: true, mediaType: video ? 'video' : 'image', plan: { summary: name, steps }, totalCredits: total, complete: true, balance: { creditsForGeneration: balance }, affordable: balance >= total, note: `Estimate only: nothing was run, reserved or charged. Call ${name} again without dryRun to run it.` });
+      }
+      if (url.includes('partial')) {
+        return ok({ status: 'partial', code: 'UPSTREAM_FAILED', error: 'Step 3 failed: mux failed', failedStep: 3, lastAssetUrl: 'https://cdn.aitopia.ai/changed-voice.mp3', items: [], plan: { summary: name, steps }, totalCredits: 7 });
+      }
+      if (video) return ok({ status: 'running', runToken: 'run-1', progress: null, pollAfterMs: 2000 });
+      return ok({ status: 'completed', assetUrl: `${base}/files/${name}.png`, assetName: 'result', mediaType: 'image', plan: { summary: name, steps }, totalCredits: total, openInAitopia: 'https://aitopia.ai/c/3' });
     }
     case 'run_model':
       if (args.dryRun === true) {
@@ -2543,5 +2571,109 @@ describe('run limits (account suspension)', () => {
     expect(error?.exitCode).toBe(6);
     expect(error?.message).toBe(SUSPENDED_TEXT);
     expect(names().filter((n) => n === 'get_run_status')).toHaveLength(1);
+  });
+});
+
+describe('named edit tools', () => {
+  it('upscale: an image runs upscale_image with --scale; a local file is uploaded first and saved as <name>-upscaled', async () => {
+    const photo = join(dir, 'photo.png');
+    writeFileSync(photo, 'png');
+    const out = join(dir, 'up');
+    await upscaleCommand(ctx(), photo, { scale: '4', output: `${out}/` });
+    expect(names()).toEqual(['upload_asset', 'upscale_image']);
+    expect(calls[1]?.args).toEqual({ assetUrl: 'https://cdn.aitopia.ai/uploaded.png', scale: 4 });
+    expect(calls[1]?.progressToken).toBeDefined();
+    expect(readdirSync(out)).toEqual(['photo-upscaled.png']);
+  });
+
+  it('upscale: a video runs upscale_video with --resolution and follows its run token', async () => {
+    const out = join(dir, 'upv');
+    await upscaleCommand(ctx(), 'https://cdn.aitopia.ai/clip.mp4', { resolution: '2160p', output: `${out}/` });
+    expect(names()).toEqual(['upscale_video', 'get_run_status']);
+    expect(calls[0]?.args).toEqual({ assetUrl: 'https://cdn.aitopia.ai/clip.mp4', targetResolution: '2160p' });
+    expect(readdirSync(out)).toEqual(['clip-upscaled.mp4']);
+  }, 15_000);
+
+  it('upscale: a URL that does not tell its type is probed (free) first; wrong flags stop before connecting', async () => {
+    await upscaleCommand(ctx(), 'https://example.com/media/still', { dryRun: true });
+    expect(names()).toEqual(['probe_media', 'upscale_image']);
+    expect(calls[1]?.args).toEqual({ assetUrl: 'https://example.com/media/still', dryRun: true });
+    expect(stdout.text).toContain('Estimate: 8 credits');
+    calls = [];
+    expect((await failure(upscaleCommand(ctx(), 'https://cdn.aitopia.ai/a.png', { resolution: '2160p' })))?.exitCode).toBe(2);
+    expect((await failure(upscaleCommand(ctx(), 'https://cdn.aitopia.ai/a.mp4', { scale: '4' })))?.exitCode).toBe(2);
+    expect((await failure(upscaleCommand(ctx(), 'https://cdn.aitopia.ai/a.mp3', {})))?.exitCode).toBe(2);
+    expect((await failure(upscaleCommand(ctx(), 'https://cdn.aitopia.ai/a.png', { scale: '3' })))?.exitCode).toBe(2);
+    expect(calls).toEqual([]);
+  });
+
+  it('remove-bg passes the project, the name and --json; a video is refused before connecting', async () => {
+    await removeBgCommand(ctx(true), 'https://cdn.aitopia.ai/product.jpg', { project: 'Podcast', name: 'Cut', output: `${join(dir, 'rb')}/` });
+    expect(calls.find((c) => c.name === 'remove_background')?.args).toEqual({ assetUrl: 'https://cdn.aitopia.ai/product.jpg', projectId: 'p-1111', assetName: 'Cut' });
+    expect(JSON.parse(stdout.text)).toMatchObject({ status: 'completed' });
+    calls = [];
+    const error = await failure(removeBgCommand(ctx(), 'https://cdn.aitopia.ai/clip.mp4', {}));
+    expect(error?.exitCode).toBe(2);
+    expect(error?.message).toContain('takes an image');
+    expect(calls).toEqual([]);
+  });
+
+  it('outpaint: --aspect or pixels per side (not both, not neither); --prompt goes along', async () => {
+    await outpaintCommand(ctx(), 'https://cdn.aitopia.ai/beach.png', { left: 300, right: 300, prompt: 'more sand', dryRun: true });
+    expect(calls[0]?.args).toEqual({ assetUrl: 'https://cdn.aitopia.ai/beach.png', expand: { left: 300, right: 300 }, prompt: 'more sand', dryRun: true });
+    calls = [];
+    await outpaintCommand(ctx(), 'https://cdn.aitopia.ai/beach.png', { aspect: '16:9', dryRun: true });
+    expect(calls[0]?.args).toEqual({ assetUrl: 'https://cdn.aitopia.ai/beach.png', aspectRatio: '16:9', dryRun: true });
+    calls = [];
+    expect((await failure(outpaintCommand(ctx(), 'https://cdn.aitopia.ai/beach.png', {})))?.exitCode).toBe(2);
+    expect((await failure(outpaintCommand(ctx(), 'https://cdn.aitopia.ai/beach.png', { aspect: '1:1', top: 10 })))?.exitCode).toBe(2);
+    expect(calls).toEqual([]);
+  });
+
+  it('reframe needs --aspect and names the file after the ratio', async () => {
+    expect((await failure(reframeCommand(ctx(), 'https://cdn.aitopia.ai/clip.mp4', {})))?.exitCode).toBe(2);
+    const out = join(dir, 'rf');
+    await reframeCommand(ctx(), 'https://cdn.aitopia.ai/clip.mp4', { aspect: '9:16', output: `${out}/` });
+    expect(calls[0]?.args).toEqual({ assetUrl: 'https://cdn.aitopia.ai/clip.mp4', aspectRatio: '9:16' });
+    expect(readdirSync(out)).toEqual(['clip-9x16.mp4']);
+  }, 15_000);
+
+  it('motion uploads both local files and sends mode and prompt', async () => {
+    const image = join(dir, 'me.png');
+    const video = join(dir, 'dance.mp4');
+    writeFileSync(image, 'png');
+    writeFileSync(video, 'mp4');
+    await motionCommand(ctx(), image, video, { mode: 'replace', prompt: 'on a stage', dryRun: true });
+    expect(names()).toEqual(['upload_asset', 'upload_asset', 'motion_control']);
+    expect(calls[2]?.args).toEqual({
+      characterImageUrl: 'https://cdn.aitopia.ai/uploaded.png',
+      referenceVideoUrl: 'https://cdn.aitopia.ai/uploaded.png',
+      prompt: 'on a stage',
+      mode: 'replace',
+      dryRun: true,
+    });
+    calls = [];
+    expect((await failure(motionCommand(ctx(), video, image, {})))?.exitCode).toBe(2);
+    expect(calls).toEqual([]);
+  });
+
+  it('voice-change: a preset in any case, --denoise, and the steps of a video shown on --dry-run', async () => {
+    await voiceChangeCommand(ctx(), 'https://cdn.aitopia.ai/talk.mp4', { voice: 'aria', denoise: true, dryRun: true });
+    expect(calls[0]?.args).toEqual({ assetUrl: 'https://cdn.aitopia.ai/talk.mp4', presetVoice: 'Aria', removeBackgroundNoise: true, dryRun: true });
+    expect(stdout.text).toContain('1. Extract audio (ffmpeg) · 1 credit');
+    expect(stdout.text).toContain('Estimate: 8 credits');
+    calls = [];
+    const error = await failure(voiceChangeCommand(ctx(), 'https://cdn.aitopia.ai/talk.mp3', { voice: 'Morgan' }));
+    expect(error?.exitCode).toBe(2);
+    expect(error?.message).toContain('not a preset voice');
+    expect(error?.hint).toContain('aitopia audio');
+    expect(calls).toEqual([]);
+  });
+
+  it('a run that stops part way exits 1 and names the last finished file', async () => {
+    const error = await failure(voiceChangeCommand(ctx(), 'https://cdn.aitopia.ai/partial.mp3', {}));
+    expect(error?.exitCode).toBe(1);
+    expect(error?.message).toBe('Step 3 failed: mux failed');
+    expect(error?.notes).toContain('Last finished file: https://cdn.aitopia.ai/changed-voice.mp3');
   });
 });

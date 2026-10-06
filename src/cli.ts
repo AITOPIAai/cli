@@ -18,6 +18,18 @@ import { loginCommand } from './commands/login.js';
 import { logoutCommand } from './commands/logout.js';
 import { modelCommand, modelsCommand, MODEL_TYPES } from './commands/models.js';
 import {
+  ASPECT_RATIOS,
+  MOTION_MODES,
+  motionCommand,
+  OUTPAINT_MAX_PIXELS,
+  outpaintCommand,
+  reframeCommand,
+  removeBgCommand,
+  UPSCALE_RESOLUTIONS,
+  upscaleCommand,
+  voiceChangeCommand,
+} from './commands/named.js';
+import {
   PROJECT_MEDIA_TYPES,
   projectsCreateCommand,
   projectsDeleteCommand,
@@ -70,6 +82,11 @@ Examples:
   $ aitopia video "the fox turns its head and blinks" --image fox.png
   $ aitopia audio "Welcome to AITOPIA." -o welcome.mp3
   $ aitopia edit photo.jpg "remove the background, upscale it, make it 9:16"
+  $ aitopia upscale photo.jpg --scale 4
+  $ aitopia remove-bg product.jpg
+  $ aitopia reframe clip.mp4 --aspect 9:16
+  $ aitopia motion me.png dance.mp4 --dry-run
+  $ aitopia voice-change take.mp3 --voice Aria
   $ aitopia image "spring sale banner" --project "Spring campaign" --folder Banners
   $ aitopia projects create "Spring campaign"
   $ aitopia voices create "My voice" sample.m4a --consent
@@ -340,6 +357,151 @@ over --max-credits (the plan and total are shown, nothing ran), 5 outcome unknow
   );
   addScopeOptions(edit).action(action((g, file, words, opts) => editCommand(createContext(g), file as string, words as string[], opts as Parameters<typeof editCommand>[3])));
 
+  const NAMED_DRY_RUN = `${DRY_RUN_HELP} (a local file is still uploaded, which is free: the price is checked on the file)`;
+  const NAMED_NOTE = 'AITOPIA picks the model (with a fallback if it is down); the price is shown with --dry-run.';
+
+  const upscale = addDeliveryOptions(
+    program
+      .command('upscale')
+      .description('upscale an image (2x or 4x) or a video (to 1080p or 4K)')
+      .argument('<file|url>', 'the image or video (a local file is uploaded first) or its https URL')
+      .addOption(new Option('--scale <n>', 'image: 2 (default) or 4').choices(['2', '4']))
+      .addOption(new Option('--resolution <r>', 'video: 1080p (default) or 2160p (4K)').choices([...UPSCALE_RESOLUTIONS]))
+      .option('--name <name>', 'name for the saved asset')
+      .option('--dry-run', NAMED_DRY_RUN)
+      .addHelpText(
+        'after',
+        `
+Examples:
+  $ aitopia upscale photo.jpg --scale 4
+  $ aitopia upscale clip.mp4 --resolution 2160p --dry-run
+  $ aitopia upscale https://cdn.aitopia.ai/.../still -o big.png
+
+An image runs upscale_image (Topaz), a video upscale_video (SeedVR2, priced per second).
+The type is told by the file name; a URL that does not tell is checked first (free).
+${NAMED_NOTE} Saved as <file name>-upscaled.<ext> (or at -o).`,
+      ),
+  );
+  addScopeOptions(upscale).action(action((g, file, opts) => upscaleCommand(createContext(g), file as string, opts as Parameters<typeof upscaleCommand>[2])));
+
+  const removeBg = addDeliveryOptions(
+    program
+      .command('remove-bg')
+      .description('remove the background of an image (transparent PNG cut-out)')
+      .argument('<file|url>', 'the image (a local file is uploaded first) or its https URL')
+      .option('--name <name>', 'name for the saved asset')
+      .option('--dry-run', NAMED_DRY_RUN)
+      .addHelpText(
+        'after',
+        `
+Examples:
+  $ aitopia remove-bg product.jpg
+  $ aitopia remove-bg product.jpg -o cutouts/ --project "Spring campaign"
+
+${NAMED_NOTE} Saved as <file name>-cutout.png (or at -o).`,
+      ),
+  );
+  addScopeOptions(removeBg).action(action((g, file, opts) => removeBgCommand(createContext(g), file as string, opts as Parameters<typeof removeBgCommand>[2])));
+
+  const side = (name: string) => parseIntegerOption(`--${name}`, 0, OUTPAINT_MAX_PIXELS);
+  const outpaint = addDeliveryOptions(
+    program
+      .command('outpaint')
+      .description('extend an image beyond its edges: to an aspect ratio, or by pixels per side')
+      .argument('<file|url>', 'the image (a local file is uploaded first) or its https URL')
+      .addOption(new Option('--aspect <ratio>', 'target frame').choices([...ASPECT_RATIOS]))
+      .option('--left <px>', `pixels to add on the left (0-${OUTPAINT_MAX_PIXELS})`, side('left'))
+      .option('--right <px>', `pixels to add on the right (0-${OUTPAINT_MAX_PIXELS})`, side('right'))
+      .option('--top <px>', `pixels to add on top (0-${OUTPAINT_MAX_PIXELS})`, side('top'))
+      .option('--bottom <px>', `pixels to add at the bottom (0-${OUTPAINT_MAX_PIXELS})`, side('bottom'))
+      .option('--prompt <text>', 'what the new area should show')
+      .option('--name <name>', 'name for the saved asset')
+      .option('--dry-run', NAMED_DRY_RUN)
+      .addHelpText(
+        'after',
+        `
+Examples:
+  $ aitopia outpaint photo.jpg --aspect 16:9
+  $ aitopia outpaint photo.jpg --left 300 --right 300 --prompt "more of the beach"
+
+Give --aspect, or pixels per side (not both). ${NAMED_NOTE}
+Saved as <file name>-outpainted.<ext> (or at -o).`,
+      ),
+  );
+  addScopeOptions(outpaint).action(action((g, file, opts) => outpaintCommand(createContext(g), file as string, opts as Parameters<typeof outpaintCommand>[2])));
+
+  const reframe = addDeliveryOptions(
+    program
+      .command('reframe')
+      .description('reframe an image or video to another aspect ratio, filling the new area')
+      .argument('<file|url>', 'the image or video (a local file is uploaded first) or its https URL')
+      .addOption(new Option('--aspect <ratio>', 'target frame (required)').choices([...ASPECT_RATIOS]))
+      .option('--prompt <text>', 'what the new area should show')
+      .option('--name <name>', 'name for the saved asset')
+      .option('--dry-run', NAMED_DRY_RUN)
+      .addHelpText(
+        'after',
+        `
+Examples:
+  $ aitopia reframe clip.mp4 --aspect 9:16
+  $ aitopia reframe banner.png --aspect 1:1 --prompt "soft studio backdrop" --dry-run
+
+Luma Reframe; a video is priced per second. ${NAMED_NOTE}
+Saved as <file name>-<ratio>.<ext>, e.g. clip-9x16.mp4 (or at -o).`,
+      ),
+  );
+  addScopeOptions(reframe).action(action((g, file, opts) => reframeCommand(createContext(g), file as string, opts as Parameters<typeof reframeCommand>[2])));
+
+  const motion = addDeliveryOptions(
+    program
+      .command('motion')
+      .description("make the character in an image perform a reference video's motion (or take its person's place)")
+      .argument('<characterImage>', 'image of the character (a local file is uploaded first) or its https URL')
+      .argument('<referenceVideo>', 'video with the motion (a local file is uploaded first) or its https URL')
+      .option('--prompt <text>', 'scene notes (animate mode)')
+      .addOption(new Option('--mode <mode>', 'animate: the character performs the motion (default); replace: the character replaces the person in the video').choices([...MOTION_MODES]))
+      .option('--name <name>', 'name for the saved asset')
+      .option('--dry-run', NAMED_DRY_RUN)
+      .addHelpText(
+        'after',
+        `
+Examples:
+  $ aitopia motion me.png dance.mp4
+  $ aitopia motion mascot.png wave.mp4 --mode replace --dry-run
+
+animate runs Kling 3.0 Motion Control, replace Wan 2.2 Animate Replace; priced per second
+of the reference video. Only use people you have the rights to.
+Saved as <image name>-motion.mp4 (or at -o).`,
+      ),
+  );
+  addScopeOptions(motion).action(action((g, image, video, opts) => motionCommand(createContext(g), image as string, video as string, opts as Parameters<typeof motionCommand>[3])));
+
+  const voiceChange = addDeliveryOptions(
+    program
+      .command('voice-change')
+      .description('re-voice the speech in an audio or video file with a preset voice, keeping its timing')
+      .argument('<file|url>', 'the audio or video (a local file is uploaded first) or its https URL')
+      .option('--voice <preset>', 'preset voice, e.g. Rachel (default), Aria, Roger, Sarah (any case)')
+      .option('--denoise', 'also clean background noise from the voice')
+      .option('--name <name>', 'name for the saved asset')
+      .option('--dry-run', NAMED_DRY_RUN)
+      .addHelpText(
+        'after',
+        `
+Examples:
+  $ aitopia voice-change take.mp3 --voice Aria
+  $ aitopia voice-change interview.mp4 --voice Roger --denoise --dry-run
+
+ElevenLabs Voice Changer. A video gets its sound extracted, changed and put back (each
+step billed like its own tool). Presets: Rachel, Drew, Clyde, Paul, Aria, Domi, Dave,
+Roger, Fin, Sarah, James, Jane, Juniper, Arabella, Hope, Bradford, Reginald, Gaming,
+Austin, Kuon, Blondie, Priyanka, Alexandra, Monika, Mark, Grimblewood.
+To speak new text in one of your cloned voices, use \`aitopia audio "<text>" --voice <name>\`.
+Saved as <file name>-<voice>.<ext> (or at -o).`,
+      ),
+  );
+  addScopeOptions(voiceChange).action(action((g, file, opts) => voiceChangeCommand(createContext(g), file as string, opts as Parameters<typeof voiceChangeCommand>[2])));
+
   program
     .command('transcribe')
     .description('turn speech in an audio or video file into subtitles (SRT) or text; 1 credit (2 for a video)')
@@ -389,7 +551,8 @@ Examples:
 
 A project or folder is named by its name (any case) or its id. Projects and folders
 are free; files stay in your AITOPIA Creations also when a project is deleted.
---project / --folder on image, video, audio, edit, batch and agent run save new results there.`,
+--project / --folder on image, video, audio, edit, upscale, remove-bg, outpaint, reframe,
+motion, voice-change, batch and agent run save new results there.`,
     );
 
   projects

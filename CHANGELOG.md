@@ -12,6 +12,7 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- One-step edit commands on the named MCP tools (AITOPIA picks the model, with a fallback): `aitopia upscale <file|url>` (`upscale_image` with `--scale 2|4` for an image, `upscale_video` with `--resolution 1080p|2160p` for a video; the type comes from the file name, else a free `probe_media`), `aitopia remove-bg` (`remove_background`), `aitopia outpaint` (`outpaint_image`, `--aspect` or `--left/--right/--top/--bottom` pixels, `--prompt`), `aitopia reframe --aspect <ratio>` (`reframe`, image or video, `--prompt`), `aitopia motion <characterImage> <referenceVideo>` (`motion_control`, `--mode animate|replace`, `--prompt`) and `aitopia voice-change` (`voice_change`, `--voice <preset>` in any case, `--denoise`). Each uploads a local file first (also for `--dry-run`: the price is checked on the file), takes `--name`, `--dry-run` (the steps of a multi-step run, the total and your balance), `-o`, `--force`, `--no-download`, `--project`, `--folder` and `--json`, follows a run token with live progress and saves the result as `<file name>-upscaled`, `-cutout`, `-outpainted`, `-<ratio>`, `-motion` or `-<voice>`. A file type a command does not take, a missing `--aspect`, or conflicting flags are usage errors (exit 2) before anything is called; a run that stops part way exits 1 and names the last finished file.
 - `aitopia video --resolution <r>` (e.g. `720p`, `1080p`) and `--audio` / `--no-audio` (native sound, on models that make it).
 
 ### Removed

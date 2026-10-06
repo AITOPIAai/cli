@@ -110,8 +110,8 @@ url=$(aitopia image "app icon, flat, blue" --no-download --json | jq -r '.assetU
 echo "$url"
 ```
 
-Check the price first. `--dry-run` works on `image`, `video`, `audio`, `edit`, `transcribe`, `voices create`,
-`batch` and `run` (for tools that offer a price check). Nothing is submitted or charged:
+Check the price first. `--dry-run` works on `image`, `video`, `audio`, `edit`, the one-step edit commands
+(`upscale`, `remove-bg`, ...), `transcribe`, `voices create`, `agent run`, `batch` and `run` (for tools that offer a price check). Nothing is submitted or charged:
 
 ```sh
 aitopia video "slow pan over a harbor at dawn" --duration 10 --dry-run
@@ -158,6 +158,29 @@ chain stops there: the last finished file is saved (all of them with
 (4 when it ran out of credits; with `--json` the status is `"partial"`). Finished steps are
 paid for and stay in AITOPIA, so do not run them again.
 
+One-step edits have their own commands; AITOPIA picks the model for each (with a
+fallback when it is down), so there is nothing to plan:
+
+```sh
+aitopia upscale photo.jpg --scale 4                 # image: 2x (default) or 4x
+aitopia upscale clip.mp4 --resolution 2160p         # video: 1080p (default) or 4K
+aitopia remove-bg product.jpg                       # transparent PNG cut-out
+aitopia outpaint beach.png --aspect 16:9            # or --left/--right/--top/--bottom <px>
+aitopia reframe clip.mp4 --aspect 9:16 --prompt "city street at night"
+aitopia motion me.png dance.mp4                     # --mode replace: swap into the video
+aitopia voice-change take.mp3 --voice Aria --denoise
+```
+
+They take a local file (uploaded first, also for `--dry-run`, because the price
+is checked on the file; uploading is free) or an https URL, and save the result
+as `<file name>-upscaled`, `-cutout`, `-outpainted`, `-9x16`, `-motion` or
+`-<voice>` (or at `-o`). `upscale` picks the image or video tool from the file
+name; a URL that does not tell is checked first with the free `probe_media`.
+Videos are priced per second. `voice-change` takes the preset voices listed in
+`aitopia voice-change --help`; to speak new text in one of your cloned voices use
+`aitopia audio "<text>" --voice <name>`. `motion`: only use people you have the
+rights to.
+
 Make several things at once (up to 12, any mix of models and media) from a
 JSON file:
 
@@ -193,7 +216,7 @@ simply be run again). `--no-wait` returns after the first answer and exits 5
 with the run tokens of the items still going.
 
 Keep your files in projects. `--project` (and `--folder`) on `image`, `video`,
-`audio`, `edit`, `batch` and `agent run` saves new results there; a project or folder is named
+`audio`, `edit`, the one-step edit commands, `batch` and `agent run` saves new results there; a project or folder is named
 by its name (any case) or its id, and is checked before anything is spent:
 
 ```sh
@@ -328,6 +351,12 @@ lists the closest current models (`Did you mean: ...`).
 | `aitopia video <prompt> [--model id] [--image file\|url] [--duration s] [--aspect r] [--resolution r] [--audio \| --no-audio] [--dry-run]` | Generate a video (AITOPIA picks the model unless `--model`) |
 | `aitopia audio <text> [--model id \| --voice name] [--emotion mood] [--set k=v] [--dry-run]` | Generate speech, music or sound (`--voice`: in one of your cloned voices; `--emotion`: in a mood) |
 | `aitopia edit <file\|url> <instruction> [--dry-run] [--plan token] [--max-credits n] [--keep-steps]` | Edit a file in plain words (planned steps, shown first) |
+| `aitopia upscale <file\|url> [--scale 2\|4] [--resolution 1080p\|2160p] [--dry-run]` | Upscale an image (2x/4x) or a video (1080p/4K) |
+| `aitopia remove-bg <file\|url> [--dry-run]` | Remove an image's background (transparent PNG) |
+| `aitopia outpaint <file\|url> (--aspect r \| --left/--right/--top/--bottom px) [--prompt text] [--dry-run]` | Extend an image beyond its edges |
+| `aitopia reframe <file\|url> --aspect r [--prompt text] [--dry-run]` | Reframe an image or video to another aspect ratio |
+| `aitopia motion <characterImage> <referenceVideo> [--mode animate\|replace] [--prompt text] [--dry-run]` | Make a character perform a video's motion (or replace its person) |
+| `aitopia voice-change <file\|url> [--voice preset] [--denoise] [--dry-run]` | Re-voice speech in an audio or video with a preset voice |
 | `aitopia batch <file> [--dry-run] [--wait \| --no-wait]` | Make up to 12 images, videos and audio clips from a JSON file |
 | `aitopia transcribe <file\|url> [--language code] [--format srt\|txt\|json] [--words] [--dry-run]` | Speech to subtitles or text |
 | `aitopia projects [list] [--limit n] [--offset n]` | List your projects |
@@ -345,7 +374,8 @@ lists the closest current models (`Did you mean: ...`).
 | `aitopia tools [--q text]` | List the tools available to you |
 | `aitopia status <runToken...> [--wait]` | Check or wait for long runs (up to 12 tokens) |
 
-`image`, `video`, `audio`, `edit`, `batch` and `agent run` also take `--project <name|id>`
+`image`, `video`, `audio`, `edit`, `upscale`, `remove-bg`, `outpaint`, `reframe`, `motion`,
+`voice-change`, `batch` and `agent run` also take `--project <name|id>`
 and `--folder <name|id>` (save the result there).
 
 Commands that produce files also take:
