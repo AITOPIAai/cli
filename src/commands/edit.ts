@@ -369,9 +369,18 @@ function deliverEditEstimate(ctx: Context, outcome: ToolOutcome, options: EditOp
   }
 }
 
-/** A shell-safe word: as is when plain, else in single quotes. */
-function shellWord(word: string): string {
-  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
+/**
+ * A shell-safe word: as is when plain, else quoted for the user's shell. POSIX
+ * shells get single quotes. On Windows a backslash path is plain, and other
+ * words get double quotes, which cmd.exe and PowerShell both read; a word with
+ * characters either would expand inside double quotes gets PowerShell single
+ * quotes instead.
+ */
+export function shellWord(word: string, windows = process.platform === 'win32'): string {
+  if (!windows) return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`;
+  if (/^[\w+=:./\\-]+$/.test(word)) return word;
+  if (!/["$`%!]/.test(word)) return `"${word}"`;
+  return `'${word.replace(/'/g, "''")}'`;
 }
 
 function runPlanCommand(source: string, instruction: string, token: string): string {

@@ -5,13 +5,14 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
   type Stats,
 } from 'node:fs';
-import { dirname, join, relative, resolve, isAbsolute } from 'node:path';
+import { dirname, join, posix, win32 } from 'node:path';
 import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import type { OAuthClientInformationMixed, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
@@ -48,9 +49,28 @@ function lstatOrUndefined(path: string): Stats | undefined {
   }
 }
 
-function isInside(child: string, parent: string): boolean {
-  const rel = relative(resolve(parent), resolve(child));
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+/** The real path (on Windows this expands 8.3 short names like RUNNER~1); the input when it cannot be resolved. */
+function realPath(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * Whether child is parent or below it. On Windows both are compared as real
+ * paths and without regard to case, so C:\Users\RUNNER~1\x is inside
+ * C:\Users\runneradmin.
+ */
+export function isInside(child: string, parent: string, windows = IS_WINDOWS): boolean {
+  const path = windows ? win32 : posix;
+  const norm = (p: string) => {
+    const full = path.resolve(realPath(p));
+    return windows ? full.toLowerCase() : full;
+  };
+  const rel = path.relative(norm(parent), norm(child));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
 export interface CredentialStoreOptions {
