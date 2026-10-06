@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Removed
+
+- `list_connections` from the help examples and the README (integrations are not offered), and the hint that pointed a third-party sign-in failure at it: such a failure still exits 1 (not 3) and keeps the server's own hint.
+
 ## [0.2.1] - 2026-10-05
 
 ### Added

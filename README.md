@@ -93,7 +93,6 @@ aitopia video "waves at sunset" --model <model-id> --duration 5 --set <field>=<v
 Run any AITOPIA tool (see `aitopia tools`):
 
 ```sh
-aitopia run list_connections
 aitopia run trim_video --json-args '{"videoAssetUrl":"https://cdn.aitopia.ai/...","segments":[{"startSec":0,"endSec":5}]}'
 echo '{"assetUrl":"https://cdn.aitopia.ai/..."}' > args.json
 aitopia run probe_media --args-file args.json
@@ -447,8 +446,8 @@ from your computer with `ssh -L <port>:127.0.0.1:<port> host` and open the link 
 
 **"Your session has expired" / exit code 3.** Run `aitopia login` again. Sessions
 refresh automatically, but a revoked or very old session needs a new sign-in.
-An error about a connected app (Gmail, Shopify, ...) is not about your AITOPIA
-sign-in: reconnect that app in AITOPIA (`aitopia run list_connections` shows them).
+An error that names another service's sign-in (not AITOPIA's) exits 1, not 3:
+`aitopia login` does not fix it.
 
 **"A download failed".** The result is already made and paid for: the CLI prints
 its URL and the "Open in AITOPIA" link. Download it from there instead of

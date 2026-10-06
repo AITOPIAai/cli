@@ -81,7 +81,7 @@ Examples:
   $ aitopia batch shots.json -o shots/
   $ aitopia status <runToken> <runToken> --wait
   $ aitopia upload photo.jpg clip.mp4
-  $ aitopia run list_connections
+  $ aitopia run probe_media --set assetUrl=https://cdn.aitopia.ai/...
   $ aitopia credits --json
 
 Exit codes: 0 ok, 1 failed, 2 usage error, 3 not signed in, 4 not enough credits,

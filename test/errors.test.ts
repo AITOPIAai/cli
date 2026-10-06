@@ -8,7 +8,6 @@ import {
   failureToError,
   NotSignedInError,
   OutcomeUnknownError,
-  RECONNECT_APP_HINT,
   runLimitNotes,
   runLimitOf,
   toCliError,
@@ -54,16 +53,16 @@ describe('failureToError', () => {
     expect(error.hint).toBe('Run `aitopia login`.');
   });
 
-  it('keeps third-party auth failures at exit 1 with a reconnect hint', () => {
+  it('keeps third-party auth failures at exit 1 without a sign-in hint', () => {
     // Composio: "reconnect your Gmail" is inferred as SESSION_EXPIRED by the server.
     const gmail = failureToError({ status: 'failed', code: 'SESSION_EXPIRED', error: 'Gmail connection expired. Please reconnect your Gmail account.', retryable: false });
     expect(gmail.exitCode).toBe(1);
     expect(gmail.code).toBe('SESSION_EXPIRED');
-    expect(gmail.hint).toBe(RECONNECT_APP_HINT);
+    expect(gmail.hint).toBeUndefined();
     // Shopify: "Unauthorized" is inferred as UNAUTHENTICATED.
     const shopify = failureToError({ status: 'failed', code: 'UNAUTHENTICATED', error: '[API] Invalid API key or access token (unrecognized login or wrong password) Unauthorized' });
     expect(shopify.exitCode).toBe(1);
-    expect(shopify.hint).toBe(RECONNECT_APP_HINT);
+    expect(shopify.hint).toBeUndefined();
   });
 
   it('keeps error + hint for other codes and adds retry time', () => {

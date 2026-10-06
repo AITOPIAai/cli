@@ -13,7 +13,6 @@ export const EXIT = {
 
 export const BUY_CREDITS_URL = 'https://aitopia.ai/pricing';
 export const LOGIN_HINT = 'Run `aitopia login`.';
-export const RECONNECT_APP_HINT = 'A connected app needs reconnecting in AITOPIA. See `aitopia run list_connections`.';
 
 export interface ErrorExtra {
   /** Server error code (e.g. INSUFFICIENT_CREDITS) or a local one (NOT_SIGNED_IN, NETWORK, ...). */
@@ -221,10 +220,6 @@ export function failureToError(
 
   if (exitCode === EXIT.AUTH) {
     return new CliError(message, exitCode, { code, hint: LOGIN_HINT, notes, data });
-  }
-  if (AITOPIA_AUTH_CODES.has(code)) {
-    // A third-party app's sign-in (Gmail, Shopify, ...), not the AITOPIA one.
-    return new CliError(message, exitCode, { code, hint: hint ?? RECONNECT_APP_HINT, notes, data });
   }
   if (code === 'INSUFFICIENT_CREDITS') {
     const details = (payload.details && typeof payload.details === 'object' ? payload.details : {}) as Record<string, unknown>;
