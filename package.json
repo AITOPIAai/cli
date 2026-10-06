@@ -1,6 +1,6 @@
 {
   "name": "aitopia",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Command-line client for AITOPIA: generate images, video and audio, run editing tools, check credits and download results.",
   "type": "module",
   "bin": {
