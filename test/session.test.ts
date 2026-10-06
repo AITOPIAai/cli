@@ -22,7 +22,7 @@ import { buildProgram, jsonStatus, printError } from '../src/cli.js';
 import { batchCommand } from '../src/commands/batch.js';
 import { runCommand } from '../src/commands/run.js';
 import { statusCommand } from '../src/commands/status.js';
-import { editCommand } from '../src/commands/edit.js';
+import { editCommand, shellWord } from '../src/commands/edit.js';
 import { audioCommand } from '../src/commands/audio.js';
 import {
   projectsCreateCommand,
@@ -1501,7 +1501,7 @@ describe('edit', () => {
     writeFileSync(photo, 'png');
     await editCommand(ctx(), photo, ['remove the background'], { dryRun: true });
     expect(stdout.text).toContain('To run exactly this plan at this price (within 1 hour):');
-    expect(stdout.text).toContain(`aitopia edit ${photo} 'remove the background' --plan=plan-token-abcdefghijkl`);
+    expect(stdout.text).toContain(`aitopia edit ${shellWord(photo)} ${shellWord('remove the background')} --plan=plan-token-abcdefghijkl`);
     const uploaded = calls.find((c) => c.name === 'edit_media')?.args.assetUrl;
     calls.length = 0;
     await editCommand(ctx(), photo, ['remove', 'the', 'background'], { plan: 'plan-token-abcdefghijkl', output: dir, force: true });
@@ -2712,5 +2712,20 @@ describe('upload into a project', () => {
     calls = [];
     expect((await failure(uploadCommand(ctx(), [small], { folder: 'Banners' })))?.exitCode).toBe(2);
     expect(calls).toEqual([]);
+  });
+});
+
+describe('shellWord', () => {
+  it('POSIX: plain words as is, others in single quotes', () => {
+    expect(shellWord('/tmp/fox.png', false)).toBe('/tmp/fox.png');
+    expect(shellWord("it's red", false)).toBe(`'it'\\''s red'`);
+  });
+
+  it('Windows: backslash paths as is, spaces in double quotes, expandable characters in single quotes', () => {
+    expect(shellWord('C:\\Users\\RUNNER~1\\fox.png', true)).toBe('"C:\\Users\\RUNNER~1\\fox.png"');
+    expect(shellWord('C:\\Users\\ann\\fox.png', true)).toBe('C:\\Users\\ann\\fox.png');
+    expect(shellWord('C:\\My Photos\\fox.png', true)).toBe('"C:\\My Photos\\fox.png"');
+    expect(shellWord('remove the background', true)).toBe('"remove the background"');
+    expect(shellWord("50% off, it's $5", true)).toBe("'50% off, it''s $5'");
   });
 });

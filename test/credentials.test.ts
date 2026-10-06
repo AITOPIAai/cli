@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { configDir, credentialsPath } from '../src/config.js';
-import { CredentialStore } from '../src/credentials.js';
+import { CredentialStore, isInside } from '../src/credentials.js';
 import { StoredSessionProvider } from '../src/auth.js';
 
 const PROD = 'https://mcp.aitopia.ai/mcp';
@@ -112,5 +112,19 @@ describe('CredentialStore', () => {
     await provider.invalidateCredentials('tokens');
     expect(store.get(PROD)?.tokens).toBeUndefined();
     expect(store.get(PROD)?.client?.client_id).toBe('c');
+  });
+});
+
+describe('isInside', () => {
+  it('on Windows ignores case and accepts the profile itself or anything below it', () => {
+    expect(isInside('C:\\USERS\\Ann\\AppData\\Roaming\\aitopia', 'c:\\Users\\ann', true)).toBe(true);
+    expect(isInside('C:\\Users\\ann', 'C:\\Users\\ann', true)).toBe(true);
+    expect(isInside('C:\\Users\\bob\\aitopia', 'C:\\Users\\ann', true)).toBe(false);
+    expect(isInside('D:\\aitopia', 'C:\\Users\\ann', true)).toBe(false);
+  });
+
+  it('on POSIX is case-sensitive', () => {
+    expect(isInside('/home/ann/.config/aitopia', '/home/ann', false)).toBe(true);
+    expect(isInside('/home/Ann/.config', '/home/ann', false)).toBe(false);
   });
 });

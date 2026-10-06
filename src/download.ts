@@ -1,4 +1,4 @@
-import { createWriteStream, existsSync, linkSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { createWriteStream, type WriteStream, existsSync, linkSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { Readable, Transform } from 'node:stream';
@@ -199,6 +199,15 @@ export function targetPath(
 
 const activeTempFiles = new Set<string>();
 
+/** Resolves once the file handle is released (destroying the stream if it is still open). */
+function closeStream(stream: WriteStream): Promise<void> {
+  if (stream.closed) return Promise.resolve();
+  return new Promise((done) => {
+    stream.once('close', () => done());
+    stream.destroy();
+  });
+}
+
 /** Removes partial downloads (called on exit and Ctrl+C). */
 export function cleanupTempFiles(): void {
   for (const file of activeTempFiles) rmSync(file, { force: true });
@@ -294,6 +303,7 @@ export async function downloadAsset(url: string, options: DownloadOptions): Prom
   };
   touch();
   let tmp: string | undefined;
+  let sink: WriteStream | undefined;
   try {
     const { res, finalUrl } = await fetchChecked(url, options, controller.signal);
     if (!res.ok || !res.body) {
@@ -332,9 +342,11 @@ export async function downloadAsset(url: string, options: DownloadOptions): Prom
         done(null, chunk);
       },
     });
-    await pipeline(Readable.fromWeb(res.body as WebReadableStream<Uint8Array>), meter, createWriteStream(tmp, { flags: 'wx' }), {
+    sink = createWriteStream(tmp, { flags: 'wx' });
+    await pipeline(Readable.fromWeb(res.body as WebReadableStream<Uint8Array>), meter, sink, {
       signal: controller.signal,
     });
+    await closeStream(sink);
     return place(tmp, dest, options.force);
   } catch (error) {
     const reason = controller.signal.reason as unknown;
@@ -342,6 +354,8 @@ export async function downloadAsset(url: string, options: DownloadOptions): Prom
     throw error;
   } finally {
     clearTimeout(idle);
+    // Windows cannot delete a file that is still open: wait for the stream to close first.
+    if (sink) await closeStream(sink);
     if (tmp) {
       rmSync(tmp, { force: true });
       activeTempFiles.delete(tmp);
