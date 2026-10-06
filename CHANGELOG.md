@@ -6,24 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Changed
-
-- `aitopia video` calls the `generate_video` tool: without `--model` AITOPIA picks a video model that supports what you asked (your preferred one, then the ones it runs most successfully) and the CLI prints it as `Model: ...`; `--model` is sent as `modelId` (with `allowAnyModel`). `--image`, `--duration` (a positive number of seconds), `--aspect`, `--name`, `--dry-run`, `-o`, `--project` and `--folder` work as before; a value the model does not support is refused by the server with the allowed values (exit 1, nothing spent). `--set` is no longer accepted for `video` (exit 2, with a hint to use `aitopia run run_model`).
-
-### Fixed
-
-- `aitopia transcribe --language auto` no longer sends `auto` to Grok Speech-to-Text (its language list has no `auto`): like no `--language`, the language is detected, matching the server.
-- `aitopia transcribe` refuses media longer than 2 hours (the server's limit per run) before anything is uploaded, extracted or charged, when the free probe of a URL whose name does not tell its type reports the length (`MEDIA_TOO_LONG`, exit 1, with a hint to split it); a length not known locally is left to the models.
-
 ### Added
 
 - One-step edit commands on the named MCP tools (AITOPIA picks the model, with a fallback): `aitopia upscale <file|url>` (`upscale_image` with `--scale 2|4` for an image, `upscale_video` with `--resolution 1080p|2160p` for a video; the type comes from the file name, else a free `probe_media`), `aitopia remove-bg` (`remove_background`), `aitopia outpaint` (`outpaint_image`, `--aspect` or `--left/--right/--top/--bottom` pixels, `--prompt`), `aitopia reframe --aspect <ratio>` (`reframe`, image or video, `--prompt`), `aitopia motion <characterImage> <referenceVideo>` (`motion_control`, `--mode animate|replace`, `--prompt`) and `aitopia voice-change` (`voice_change`, `--voice <preset>` in any case, `--denoise`). Each uploads a local file first (also for `--dry-run`: the price is checked on the file), takes `--name`, `--dry-run` (the steps of a multi-step run, the total and your balance), `-o`, `--force`, `--no-download`, `--project`, `--folder` and `--json`, follows a run token with live progress and saves the result as `<file name>-upscaled`, `-cutout`, `-outpainted`, `-<ratio>`, `-motion` or `-<voice>`. A file type a command does not take, a missing `--aspect`, or conflicting flags are usage errors (exit 2) before anything is called; a run that stops part way exits 1 and names the last finished file.
 - `aitopia upload --project <name|id> [--folder <name|id>]`: the names are resolved like on `image` and `video` (a missing project or folder stops before anything is uploaded) and sent as `projectId` / `folderId` to `upload_asset` and `create_upload_link` (local files and URL imports), so the files are kept in that project.
 - `aitopia video --resolution <r>` (e.g. `720p`, `1080p`) and `--audio` / `--no-audio` (native sound, on models that make it).
 
+### Changed
+
+- `aitopia video` calls the `generate_video` tool: without `--model` AITOPIA picks a video model that supports what you asked (your preferred one, then the ones it runs most successfully) and the CLI prints it as `Model: ...`; `--model` is sent as `modelId` (with `allowAnyModel`). `--image`, `--duration` (a positive number of seconds), `--aspect`, `--name`, `--dry-run`, `-o`, `--project` and `--folder` work as before; a value the model does not support is refused by the server with the allowed values (exit 1, nothing spent). `--set` is no longer accepted for `video` (exit 2, with a hint to use `aitopia run run_model`).
+
 ### Removed
 
 - `list_connections` from the help examples and the README (integrations are not offered), and the hint that pointed a third-party sign-in failure at it: such a failure still exits 1 (not 3) and keeps the server's own hint.
+
+### Fixed
+
+- `aitopia transcribe --language auto` no longer sends `auto` to Grok Speech-to-Text (its language list has no `auto`): like no `--language`, the language is detected, matching the server.
+- `aitopia transcribe` refuses media longer than 2 hours (the server's limit per run) before anything is uploaded, extracted or charged, when the free probe of a URL whose name does not tell its type reports the length (`MEDIA_TOO_LONG`, exit 1, with a hint to split it); a length not known locally is left to the models.
 
 ## [0.2.1] - 2026-10-05
 
