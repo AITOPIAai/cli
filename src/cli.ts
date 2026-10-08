@@ -44,6 +44,7 @@ import { statusCommand } from './commands/status.js';
 import { toolsCommand } from './commands/tools.js';
 import { TRANSCRIBE_FORMATS, transcribeCommand } from './commands/transcribe.js';
 import { ANALYZE_FORMATS, ANALYZE_MODES, analyzeCommand } from './commands/analyze.js';
+import { dubCommand } from './commands/dub.js';
 import { uploadCommand } from './commands/upload.js';
 import { videoCommand } from './commands/video.js';
 import { VOICE_CLONE_CREDITS, voicesCreateCommand, voicesDeleteCommand, voicesListCommand } from './commands/voices.js';
@@ -94,6 +95,7 @@ Examples:
   $ aitopia audio "Thanks for watching." --voice "My voice"
   $ aitopia transcribe interview.mp4 -o interview.srt
   $ aitopia analyze clip.mp4 --mode scenes
+  $ aitopia dub clip.mp4 --to Spanish --consent
   $ aitopia agents --q "background"
   $ aitopia agent run background-remover --set photo=product.jpg
   $ aitopia video "slow pan over a harbor" --duration 10 --dry-run
@@ -567,6 +569,42 @@ the model lists (3 credits today; --dry-run shows the price). Nothing is saved i
 the analysis is printed, or saved with -o. For exact timed speech use aitopia transcribe.`,
     )
     .action(action((g, file, question, opts) => analyzeCommand(createContext(g), file as string, (question as string[]) ?? [], opts as Parameters<typeof analyzeCommand>[3])));
+
+  addDeliveryOptions(
+    program
+      .command('dub')
+      .description("translate a video's speech and dub it in the speaker's own (cloned) voice or one of yours, with subtitles and optional lip sync")
+      .argument('<file|url>', 'the video, up to 60 s (a local file is uploaded first) or its https URL')
+      .requiredOption('--to <language>', 'language to dub into, e.g. Spanish, de, ja')
+      .option('--from <language>', 'language spoken in the video (default: detected)')
+      .option('--voice <name|id>', 'speak with one of your voices (`aitopia voices`) instead of cloning the speaker')
+      .option('--consent', "clone the speaker's voice: you confirm it is your own voice, or the speaker gave you permission")
+      .option('--yes-clone', 'the same as --consent')
+      .option('--lipsync', 'also match the lips to the new speech (costs more)')
+      .option('--lipsync-model <id>', 'the lip sync model (implies --lipsync)')
+      .option('--max-credits <n>', 'do not run if the dub costs more than this', parseIntegerOption('--max-credits', 1, 1_000_000))
+      .option('--dry-run', 'show each step with its price, the total and your balance; nothing runs or is charged (a local file is still uploaded, which is free)'),
+  )
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia dub clip.mp4 --to Spanish --consent          # clone the speaker, dub, save clip-spanish.mp4 + .srt
+  $ aitopia dub clip.mp4 --to de --voice "My voice"      # dub with one of your voices
+  $ aitopia dub talk.mp4 --to ja --consent --lipsync -o out/
+  $ aitopia dub clip.mp4 --to fr --dry-run               # the steps, their prices, the total
+
+Video translation in one command: the speech is transcribed, translated, spoken in the
+new language (AI dubbing with voice cloning, or a voice you pick) and laid over the
+video; --lipsync also re-syncs the lips. A video of at most 60 s (and 100 MB as a
+local file). Cloning needs about 10 s of speech and --consent; the cloned voice is
+saved in your voices, so the next dub can use --voice <id> and skip the clone.
+The price is checked first and exactly that plan runs. Saved as <file name>-<language>.mp4
+(or at -o) with the translated subtitles as .srt next to it. The original background
+sound is not kept. Exit: 0 done, 1 failed or over --max-credits (nothing ran),
+2 usage (also no --consent without --voice), 4 not enough credits, 5 outcome unknown.`,
+    )
+    .action(action((g, file, opts) => dubCommand(createContext(g), file as string, opts as Parameters<typeof dubCommand>[2])));
 
   const projects = program
     .command('projects')

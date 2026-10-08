@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
@@ -34,6 +34,7 @@ import {
 import { voicesCreateCommand, voicesDeleteCommand, voicesListCommand } from '../src/commands/voices.js';
 import { transcribeCommand } from '../src/commands/transcribe.js';
 import { analyzeCommand, renderAnalysis } from '../src/commands/analyze.js';
+import { dubCommand, dubStepLines, probeDuration, srtPathFor } from '../src/commands/dub.js';
 import { agentRunCommand, agentShowCommand, agentsCommand, DRY_RUN_FILE_URL } from '../src/commands/agents.js';
 import { motionCommand, outpaintCommand, reframeCommand, removeBgCommand, upscaleCommand, voiceChangeCommand } from '../src/commands/named.js';
 import { matchNamed } from '../src/resolve.js';
@@ -128,6 +129,83 @@ function runBody(token: string): Record<string, unknown> | undefined {
   const queue = runStates[token];
   if (!queue) return undefined;
   return (queue.length > 1 ? queue.shift() : queue[0]) as Record<string, unknown>;
+}
+
+// dub-video.ts: dryRun {status:"estimate", steps, totalCredits, planToken}; a run
+// needs consent when it clones; a failed step answers status "partial" (failJson).
+function dubVideo(args: Record<string, unknown>) {
+  const url = String(args.videoUrl);
+  const clone = typeof args.voiceId !== 'string';
+  const steps = [
+    { step: 'extract_audio', label: 'Take the sound out of the video', status: 'planned', credits: 1 },
+    { step: 'transcribe', label: 'Transcribe the speech', status: url.includes('cached') ? 'reused' : 'planned', credits: url.includes('cached') ? 0 : 2 },
+    { step: 'translate', label: `Translate into ${String(args.targetLanguage)}`, status: 'planned', credits: 0 },
+    clone
+      ? { step: 'voice', label: "Clone the speaker's voice", status: 'planned', credits: 10 }
+      : { step: 'voice', label: 'Use the chosen voice', status: 'reused', credits: 0 },
+    { step: 'speech', label: 'Speak the translation', status: 'planned', credits: 5 },
+    ...(args.lipsync === true ? [{ step: 'lipsync', label: 'Sync the lips', status: 'planned', credits: 30 }] : []),
+    { step: 'subtitles', label: 'Save the translated subtitles (SRT)', status: 'planned', credits: 0 },
+  ];
+  const total = steps.reduce((sum, st) => sum + st.credits, 0);
+  if (args.dryRun === true) {
+    return ok({
+      status: 'estimate',
+      dryRun: true,
+      durationSec: 12.3,
+      targetLanguage: args.targetLanguage,
+      lipsync: args.lipsync === true,
+      steps,
+      totalCredits: total,
+      complete: true,
+      balance: { creditsForGeneration: balance },
+      affordable: balance >= total,
+      ...(typeof args.maxCredits === 'number' ? { maxCredits: args.maxCredits, withinBudget: total <= args.maxCredits } : {}),
+      planToken: 'pDUBPLAN',
+      planTokenExpiresInSec: 3600,
+      ...(clone ? { voiceNote: "The speaker's voice is cloned from this video: the run needs consent: true." } : {}),
+      note: 'Estimate only: nothing was run or charged.',
+    });
+  }
+  if (clone && args.consent !== true) {
+    return fail({ code: 'CONSENT_REQUIRED', field: 'consent', error: "Cloning the speaker's voice needs consent. Nothing was run or charged.", retryable: false, steps, totalCredits: total });
+  }
+  if (url.includes('partial')) {
+    return fail({
+      status: 'partial',
+      code: 'UPSTREAM_FAILED',
+      error: 'The step "Speak the translation" failed: provider down',
+      failedStep: 'speech',
+      retryable: false,
+      steps: steps.map((st) => (st.step === 'speech' ? { ...st, status: 'failed', credits: null, error: 'provider down' } : st.step === 'subtitles' ? { ...st, status: 'skipped' } : { ...st, status: 'completed' })),
+      totalCredits: 3,
+      note: 'The finished steps stay charged; paid steps are never retried automatically.',
+    });
+  }
+  const voiceId = clone ? 'v-cloned' : String(args.voiceId);
+  const done = {
+    status: 'completed',
+    assetUrl: `${base}/files/dubbed.mp4`,
+    assetName: 'clip · Spanish',
+    srtUrl: `${base}/files/dub-es.srt`,
+    transcriptText: 'Hello there.',
+    translatedText: 'Hola.',
+    targetLanguage: args.targetLanguage,
+    voiceId,
+    voiceCloned: clone,
+    lipsync: args.lipsync === true,
+    durationSec: 12.3,
+    steps: steps.map((st) => ({ ...st, status: st.status === 'reused' ? 'reused' : 'completed' })),
+    totalCredits: total,
+    ...(url.includes('long-lines') ? { warning: '1 translated line was longer than its time in the video even sped up, and was cut short.' } : {}),
+    note: `The original background sound is not kept. Pass voiceId "${voiceId}" next time to dub with the same voice.`,
+    openInAitopia: 'https://aitopia.ai/c/dub',
+  };
+  if (url.includes('slow')) {
+    runStates['run-dub'] ??= [{ status: 'running', runToken: 'run-dub', pollAfterMs: 50, progress: 50 }, done];
+    return ok({ status: 'running', runToken: 'run-dub', progress: null, pollAfterMs: 50 });
+  }
+  return ok(done);
 }
 
 // run-status.ts getRunStatus (single token: that run's own result; runTokens: runsToResult).
@@ -706,6 +784,8 @@ function tool(name: string, args: Record<string, unknown>) {
         jobId: 'job-a',
       });
     }
+    case 'dub_video':
+      return dubVideo(args);
     case 'run_model':
       if (args.dryRun === true) {
         if (args.modelId === 'acme/unpriced') {
@@ -2951,4 +3031,119 @@ describe('fewer round trips (0.4.2)', () => {
     await videoCommand(ctx(), ['the', 'fox'], { image, duration: '5', output: join(dir, 'c.mp4') });
     expect(calls[0]?.args.imageUrl).toBe('https://cdn.aitopia.ai/new.png');
   }, 15_000);
+});
+
+describe('dub', () => {
+  it('refuses before connecting: no --to, no consent without --voice, a non-video, a local video over 100 MB', async () => {
+    expect((await failure(dubCommand(ctx(), 'https://example.com/clip.mp4', {})))?.exitCode).toBe(2);
+    const consent = await failure(dubCommand(ctx(), 'https://example.com/clip.mp4', { to: 'Spanish' }));
+    expect(consent?.exitCode).toBe(2);
+    expect(consent?.message).toContain("Cloning the speaker's voice needs --consent");
+    expect(consent?.message).toContain('--voice <name|id>');
+    expect((await failure(dubCommand(ctx(), 'https://example.com/song.mp3', { to: 'es', consent: true })))?.message).toContain('looks like audio');
+    const big = join(dir, 'big.mp4');
+    writeFileSync(big, '');
+    truncateSync(big, 100 * 1024 * 1024 + 1);
+    const tooBig = await failure(dubCommand(ctx(), big, { to: 'es', consent: true }));
+    expect(tooBig?.exitCode).toBe(2);
+    expect(tooBig?.message).toMatch(/at most 100 MB; .*big\.mp4 is 100\.0 MB/);
+    expect(calls).toEqual([]);
+  });
+
+  it('--dry-run prints each step with its price, the total and the balance (no consent needed)', async () => {
+    await dubCommand(ctx(), 'https://example.com/clip.mp4', { to: 'Spanish', dryRun: true, lipsyncModel: 'sync/lipsync-2' });
+    expect(names()).toEqual(['dub_video']);
+    expect(calls[0]?.args).toEqual({ videoUrl: 'https://example.com/clip.mp4', targetLanguage: 'Spanish', lipsync: true, lipsyncModel: 'sync/lipsync-2', dryRun: true });
+    expect(stdout.text).toContain('Dub into Spanish (12.3 s video), with lip sync:');
+    expect(stdout.text).toContain("  4. Clone the speaker's voice · 10 credits");
+    expect(stdout.text).toContain('  6. Sync the lips · 30 credits');
+    expect(stdout.text).toContain('Total: 48 credits');
+    expect(stdout.text).toContain('Balance: 8,951 credits available');
+    expect(stdout.text).toContain('the run needs --consent');
+    expect(stdout.text).toContain('Nothing was run or charged.');
+  });
+
+  it('uploads a local video, prices it, runs that plan with consent and saves the video and the .srt next to it', async () => {
+    const video = join(dir, 'clip.mp4');
+    writeFileSync(video, 'video bytes');
+    const out = join(dir, 'dubs');
+    await dubCommand(ctx(), video, { to: 'Spanish', from: 'en', consent: true, output: `${out}/` });
+    expect(names()).toEqual(['upload_asset', 'dub_video', 'dub_video']);
+    expect(calls[1]?.args).toEqual({ videoUrl: 'https://cdn.aitopia.ai/uploaded.png', targetLanguage: 'Spanish', sourceLanguage: 'en', consent: true, dryRun: true });
+    expect(calls[2]?.args).toEqual({ videoUrl: 'https://cdn.aitopia.ai/uploaded.png', targetLanguage: 'Spanish', sourceLanguage: 'en', consent: true, planToken: 'pDUBPLAN' });
+    expect(readdirSync(out).sort()).toEqual(['clip-spanish.mp4', 'clip-spanish.srt']);
+    expect(stderr.text).toContain('Dubbing into Spanish · 18 credits');
+    expect(stdout.text).toContain("Cloned the speaker's voice; it is saved in your voices.");
+    expect(stdout.text).toContain('Next time: --voice v-cloned');
+    expect(stderr.text).toContain('The original background sound is not kept.');
+    expect(stderr.text).not.toContain('Pass voiceId');
+    expect(stdout.text).toContain('Total: 18 credits');
+  });
+
+  it('--voice resolves a name to voiceId (no consent needed), follows a long run and prints the warning; --json lists the files', async () => {
+    const out = join(dir, 'dub.mp4');
+    await dubCommand(ctx(true), 'https://example.com/slow-long-lines.mp4', { to: 'de', voice: 'my voice', lipsync: true, output: out });
+    expect(names().slice(0, 3)).toEqual(['list_voices', 'dub_video', 'dub_video']);
+    expect(names().slice(3).every((n) => n === 'get_run_status') && names().length > 3).toBe(true);
+    expect(calls[2]?.args).toEqual({ videoUrl: 'https://example.com/slow-long-lines.mp4', targetLanguage: 'de', voiceId: 'v-1', lipsync: true, planToken: 'pDUBPLAN' });
+    const json = JSON.parse(stdout.text);
+    expect(json.files).toEqual([out, join(dir, 'dub.srt')]);
+    expect(json.voiceId).toBe('v-1');
+    expect(readFileSync(join(dir, 'dub.srt'), 'utf8')).toContain('dub-es.srt');
+    calls = [];
+    await dubCommand(ctx(), 'https://example.com/long-lines.mp4', { to: 'de', voice: 'My voice', output: out });
+    expect(stderr.text).toContain('was cut short');
+    expect(stdout.text).not.toContain('Next time');
+    // Without --force the second run keeps the first files.
+    expect(readdirSync(dir).filter((f) => f.startsWith('dub')).sort()).toEqual(['dub-1.mp4', 'dub-1.srt', 'dub.mp4', 'dub.srt']);
+  });
+
+  it('stops over --max-credits before running; a failed step prints the steps and says the finished ones were paid', async () => {
+    const over = await failure(dubCommand(ctx(), 'https://example.com/clip.mp4', { to: 'es', consent: true, maxCredits: 5 }));
+    expect(over?.code).toBe('OVER_BUDGET');
+    expect(over?.exitCode).toBe(1);
+    expect(over?.hint).toContain('Nothing ran');
+    expect(names()).toEqual(['dub_video']);
+    calls = [];
+    const partial = await failure(dubCommand(ctx(), 'https://example.com/partial.mp4', { to: 'es', yesClone: true }));
+    expect(partial?.exitCode).toBe(1);
+    expect(partial?.message).toContain('Speak the translation');
+    expect(partial?.hint).toContain('finished steps stay charged');
+    expect(stdout.text).toContain('  5. Speak the translation · price unknown · failed');
+    expect(stdout.text).toContain('  1. Take the sound out of the video · 1 credit · done');
+  });
+
+  it('dubStepLines marks cached steps; srtPathFor sits next to the video; probeDuration skips without ffprobe', async () => {
+    expect(dubStepLines([{ label: 'Transcribe the speech', status: 'reused', credits: 0 }])).toEqual(['  1. Transcribe the speech · 0 credits · cached']);
+    expect(srtPathFor(join(dir, 'a.mp4'), false)).toBe(join(dir, 'a.srt'));
+    writeFileSync(join(dir, 'a.srt'), 'x');
+    expect(srtPathFor(join(dir, 'a.mp4'), false)).toBe(join(dir, 'a-1.srt'));
+    expect(srtPathFor(join(dir, 'a.mp4'), true)).toBe(join(dir, 'a.srt'));
+    expect(await probeDuration('x.mp4', async () => ({ stdout: '75.4\n' }))).toBe(75.4);
+    expect(await probeDuration('x.mp4', async () => ({ stdout: 'N/A\n' }))).toBeUndefined();
+    const missing = Object.assign(new Error('spawn ffprobe ENOENT'), { code: 'ENOENT' });
+    expect(await probeDuration('x.mp4', async () => Promise.reject(missing))).toBeUndefined();
+  });
+
+  it.skipIf(process.platform === 'win32')('a local video ffprobe measures over 60 s is refused before upload', async () => {
+    const bin = join(dir, 'bin');
+    mkdirSync(bin);
+    writeFileSync(join(bin, 'ffprobe'), '#!/bin/sh\necho 75.2\n');
+    chmodSync(join(bin, 'ffprobe'), 0o755);
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH ?? ''}`);
+    const video = join(dir, 'long.mp4');
+    writeFileSync(video, 'video bytes');
+    const error = await failure(dubCommand(ctx(), video, { to: 'es', consent: true }));
+    expect(error?.exitCode).toBe(2);
+    expect(error?.message).toContain('at most 60 seconds for now; ');
+    expect(error?.message).toContain('is 75 s');
+    expect(calls).toEqual([]);
+  });
+
+  it('is registered with --to required and the clone/lipsync options', () => {
+    const dub = buildProgram().commands.find((c) => c.name() === 'dub');
+    const flags = dub?.options.map((o) => o.long);
+    expect(flags).toEqual(expect.arrayContaining(['--to', '--from', '--voice', '--consent', '--yes-clone', '--lipsync', '--lipsync-model', '--max-credits', '--dry-run', '--output', '--force']));
+    expect(dub?.options.find((o) => o.long === '--to')?.mandatory).toBe(true);
+  });
 });
