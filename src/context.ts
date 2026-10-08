@@ -1,6 +1,6 @@
 import { credentialsPath, resolveServerUrl } from './config.js';
 import { CredentialStore } from './credentials.js';
-import { openSession, type Session } from './mcp.js';
+import { defaultCaches, openSession, type Session, type SessionCaches } from './mcp.js';
 import { Output } from './output.js';
 
 export interface GlobalOptions {
@@ -14,6 +14,8 @@ export interface Context {
   out: Output;
   store: CredentialStore;
   log?: (line: string) => void;
+  /** Local caches (OAuth discovery, handshake, tool list, uploads) in <config dir>/cache. */
+  caches: SessionCaches;
   /** Opens a session with the stored sign-in (exit 3 if there is none). */
   session(): Promise<Session>;
   /**
@@ -28,12 +30,14 @@ export function createContext(options: GlobalOptions, out?: Output): Context {
   const serverUrl = resolveServerUrl(options.server);
   const store = new CredentialStore(credentialsPath(), { warn: (message) => output.warn(message) });
   const log = options.verbose ? (line: string) => output.debug(line) : undefined;
+  const caches = defaultCaches();
   return {
     serverUrl,
     out: output,
     store,
     log,
-    session: () => openSession(store, serverUrl, log),
+    caches,
+    session: () => openSession(store, serverUrl, log, caches),
   };
 }
 

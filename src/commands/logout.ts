@@ -1,6 +1,7 @@
 import { discoverAuthorizationServerMetadata, discoverOAuthProtectedResourceMetadata } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { Context } from '../context.js';
 import { safeHost } from '../errors.js';
+import { clearServerCaches } from '../mcp.js';
 
 const REVOKE_TIMEOUT_MS = 10_000;
 
@@ -79,6 +80,8 @@ export async function logoutCommand(ctx: Context): Promise<void> {
     }
   }
   store.remove(serverUrl);
+  clearServerCaches(ctx.caches, serverUrl);
+  ctx.caches.discovery?.clear(serverUrl);
 
   if (out.jsonMode) {
     out.json({ status: 'signed_out', server: serverUrl, wasSignedIn: true, revoked });

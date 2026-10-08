@@ -52,7 +52,7 @@ function checkSource(source: string, what: string, accepts: Media[], example: st
 async function sourceUrl(ctx: Context, session: Session, source: string): Promise<string> {
   if (isRemoteUrl(source)) return source;
   if (!ctx.out.jsonMode) ctx.out.note(`Uploading ${source}...`);
-  return (await uploadSource(session.callTool, source, { allowHttpLoopback: allowHttpLoopback(ctx.serverUrl) })).assetUrl;
+  return (await uploadSource(session.callTool, source, { cache: session.uploads, allowHttpLoopback: allowHttpLoopback(ctx.serverUrl) })).assetUrl;
 }
 
 /** A probe_media answer: image (one still frame), video or audio. */

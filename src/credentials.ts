@@ -23,7 +23,34 @@ export interface ServerCredentials {
   serverUrl: string;
   client?: OAuthClientInformationMixed;
   tokens?: OAuthTokens;
+  /** When the access token expires (ISO time, from expires_in when the tokens were saved). */
+  expiresAt?: string;
   savedAt: string;
+}
+
+/** Entry fields for newly received tokens: the tokens and their expiry (dropped when the server gave none). */
+export function withTokens(entry: ServerCredentials, tokens: OAuthTokens, now = Date.now()): ServerCredentials {
+  const next: ServerCredentials = { ...entry, tokens };
+  const seconds = Number(tokens.expires_in);
+  if (Number.isFinite(seconds) && seconds > 0) next.expiresAt = new Date(now + seconds * 1000).toISOString();
+  else delete next.expiresAt;
+  return next;
+}
+
+/** Refresh this long before the stored expiry, so a request never goes out with a dying token. */
+export const REFRESH_MARGIN_MS = 60_000;
+
+/** Whether the stored access token is (nearly) expired and a refresh token can renew it. */
+export function needsRefresh(entry: ServerCredentials | undefined, now = Date.now(), marginMs = REFRESH_MARGIN_MS): boolean {
+  if (!entry?.tokens?.refresh_token) return false;
+  // Saved before 0.4.2 (no expiresAt): savedAt + expires_in; a wrong guess only refreshes early.
+  const seconds = Number(entry.tokens.expires_in);
+  const expires = entry.expiresAt
+    ? Date.parse(entry.expiresAt)
+    : Number.isFinite(seconds) && seconds > 0
+      ? Date.parse(entry.savedAt) + seconds * 1000
+      : NaN;
+  return Number.isFinite(expires) && expires - now < marginMs;
 }
 
 interface CredentialsFile {

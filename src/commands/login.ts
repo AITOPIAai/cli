@@ -4,7 +4,7 @@ import { isSafeBrowserUrl, LoginProvider, openBrowser, registeredLoopbackPort } 
 import type { Context } from '../context.js';
 import { CliError, EXIT, safeHost, toCliError } from '../errors.js';
 import { randomState, startLoopback } from '../loopback.js';
-import { createClient, createTransport, sessionFromClient } from '../mcp.js';
+import { clearServerCaches, createClient, createTransport, sessionFromClient } from '../mcp.js';
 import { creditsLine } from './credits.js';
 
 export interface LoginOptions {
@@ -41,7 +41,7 @@ export async function loginCommand(ctx: Context, options: LoginOptions): Promise
       if (!opened) out.note('Could not open a browser. Open the link above to continue.');
     }
     out.note(`Waiting for sign-in on port ${loopback.port} (up to 5 minutes)...`);
-  });
+  }, ctx.caches.discovery);
 
   let client: Client = createClient();
   try {
@@ -60,6 +60,8 @@ export async function loginCommand(ctx: Context, options: LoginOptions): Promise
     if (!provider.tokens()) {
       throw new CliError(`${host} did not ask for a sign-in, so there is nothing to save.`, EXIT.FAILED);
     }
+    // Possibly another account now: nothing cached under the old sign-in is reused.
+    clearServerCaches(ctx.caches, serverUrl);
 
     // Confirm the session with a free read.
     const session = sessionFromClient(client, serverUrl);

@@ -111,7 +111,7 @@ export async function voicesCreateCommand(ctx: Context, name: string, sample: st
         // The sample must be your own upload, also for --dry-run (uploading is free).
         if (!out.jsonMode) out.note(`Uploading ${sample}...`);
         sampleUrl = (
-          await uploadSource(session.callTool, sample, {
+          await uploadSource(session.callTool, sample, { cache: session.uploads,
             wait: (o) => settle(ctx, session, o, `Importing ${sample}`),
             allowHttpLoopback: allowHttpLoopback(ctx.serverUrl),
           })

@@ -337,7 +337,7 @@ export async function uploadAgentFiles(
     const known = uploaded.get(path);
     if (known) return known;
     ctx.out.note(`Uploading ${path}...`);
-    const url = (await uploadSource(session.callTool, path, { allowHttpLoopback: allowHttpLoopback(ctx.serverUrl) })).assetUrl;
+    const url = (await uploadSource(session.callTool, path, { cache: session.uploads, allowHttpLoopback: allowHttpLoopback(ctx.serverUrl) })).assetUrl;
     uploaded.set(path, url);
     return url;
   };

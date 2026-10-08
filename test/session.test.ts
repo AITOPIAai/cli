@@ -70,6 +70,18 @@ let balance = 8951;
 let balanceRunLimit: Record<string, unknown> | undefined;
 /** Set: generate_image (a real run with a model) fails with this body. */
 let imageFailure: Record<string, unknown> | undefined;
+/** Every /mcp request that passed auth: "POST initialize", "POST tools/call", "GET -". */
+let rpcLog: string[] = [];
+/** /mcp requests answered 401. */
+let unauthorizedCount = 0;
+/** OAuth discovery requests (.well-known). */
+let discoveryHits = 0;
+/** Set: the next POST that is not initialize gets 400 (a server that wants an initialize first). */
+let refuseUninitializedOnce = false;
+/** Set: generate_video with this imageUrl fails ASSET_UNREACHABLE (an expired upload). */
+let goneImageUrl = '';
+/** Answers of upload_asset in turn (default: the fixed URL). */
+let uploadUrls: string[] = [];
 
 const ok = (value: unknown) => ({ content: [{ type: 'text', text: JSON.stringify(value) }] });
 // normalizeFailure: {status:'failed', code, error, retryable?, ...}; also in structuredContent.
@@ -635,8 +647,11 @@ function tool(name: string, args: Record<string, unknown>) {
       return ok({ modelId: args.modelId, schema });
     }
     case 'upload_asset':
-      return ok({ status: 'completed', assetUrl: 'https://cdn.aitopia.ai/uploaded.png', assetName: String(args.fileName), contentType: 'image/png', sizeBytes: 8 });
+      return ok({ status: 'completed', assetUrl: uploadUrls.shift() ?? 'https://cdn.aitopia.ai/uploaded.png', assetName: String(args.fileName), contentType: 'image/png', sizeBytes: 8 });
     case 'generate_video': {
+      if (goneImageUrl && args.imageUrl === goneImageUrl) {
+        return fail({ code: 'ASSET_UNREACHABLE', error: 'The file could not be downloaded (HTTP 404): it may not exist or not be public.', retryable: false });
+      }
       const modelId = typeof args.modelId === 'string' ? args.modelId : args.imageUrl ? 'acme/i2v' : 'bytedance/seedance-1-lite';
       if (args.duration === 7) {
         return fail({ code: 'INVALID_INPUT', field: 'duration', error: `${modelId} does not support duration 7. Allowed: 5, 10. Nothing was spent.`, retryable: false });
@@ -729,6 +744,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return;
   }
   if (rejectAll || req.headers.authorization !== 'Bearer good-token') {
+    unauthorizedCount++;
     res
       .writeHead(401, {
         'Content-Type': 'application/json',
@@ -738,10 +754,18 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return;
   }
   if (req.method !== 'POST') {
+    rpcLog.push(`${req.method} -`);
     res.writeHead(405).end();
     return;
   }
   const body = await readBody(req);
+  const rpcMethod = String((body as { method?: unknown } | undefined)?.method ?? '-');
+  rpcLog.push(`POST ${rpcMethod}`);
+  if (refuseUninitializedOnce && rpcMethod !== 'initialize') {
+    refuseUninitializedOnce = false;
+    res.writeHead(400, { 'Content-Type': 'application/json' }).end('{"jsonrpc":"2.0","error":{"code":-32000,"message":"Bad Request: Server not initialized"},"id":null}');
+    return;
+  }
   // streamable-server.ts: a tools/call with a progressToken is answered as SSE.
   const wantsProgress = Boolean((body as { method?: string; params?: { _meta?: { progressToken?: unknown } } } | undefined)?.params?._meta?.progressToken !== undefined);
   const server = new Server({ name: 'fake-aitopia', version: '1.0.0' }, { capabilities: { tools: {} } });
@@ -788,6 +812,7 @@ let tokenRequests: URLSearchParams[] = [];
 // Minimal OAuth 2.1 authorization server: metadata, registration, token.
 async function oauthRoute(url: URL, req: IncomingMessage, res: ServerResponse): Promise<boolean> {
   const send = (status: number, body: unknown) => res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
+  if (url.pathname.startsWith('/.well-known/')) discoveryHits++;
   if (url.pathname === '/.well-known/oauth-protected-resource/mcp') {
     send(200, { resource: `${base}/mcp`, authorization_servers: [`${base}/`], scopes_supported: ['mcp'] });
     return true;
@@ -825,7 +850,7 @@ async function oauthRoute(url: URL, req: IncomingMessage, res: ServerResponse): 
     const params = new URLSearchParams(Buffer.concat(chunks).toString());
     tokenRequests.push(params);
     if (params.get('grant_type') === 'refresh_token' && params.get('refresh_token') === 'refresh-1') {
-      send(200, { access_token: 'good-token', token_type: 'Bearer', refresh_token: 'refresh-2' });
+      send(200, { access_token: 'good-token', token_type: 'Bearer', refresh_token: 'refresh-2', expires_in: 3600 });
       return true;
     }
     if (params.get('code') !== 'auth-code') {
@@ -890,6 +915,12 @@ beforeEach(() => {
   balance = 8951;
   balanceRunLimit = undefined;
   imageFailure = undefined;
+  rpcLog = [];
+  unauthorizedCount = 0;
+  discoveryHits = 0;
+  refuseUninitializedOnce = false;
+  goneImageUrl = '';
+  uploadUrls = [];
   brokenFiles = false;
   revocationEndpoint = '';
   revoked = [];
@@ -2796,4 +2827,128 @@ describe('shellWord', () => {
     expect(shellWord('remove the background', true)).toBe('"remove the background"');
     expect(shellWord("50% off, it's $5", true)).toBe("'50% off, it''s $5'");
   });
+});
+
+describe('fewer round trips (0.4.2)', () => {
+  const server = () => `${base}/mcp`;
+  const storeAt = () => new CredentialStore(join(dir, 'config', 'credentials.json'));
+  const expiring = (refreshToken = 'refresh-1', inMs = 30_000) =>
+    storeAt().update(server(), (e) => ({
+      ...e,
+      client: { client_id: 'cli-client', redirect_uris: ['http://127.0.0.1:1/callback'], issuer: `${base}/` } as never,
+      tokens: { access_token: 'expired', token_type: 'Bearer', refresh_token: refreshToken, issuer: `${base}/` } as never,
+      expiresAt: new Date(Date.now() + inMs).toISOString(),
+    }));
+
+  it('renews a token that expires within a minute before sending it (no 401), and stores the new expiry', async () => {
+    expiring();
+    await creditsCommand(ctx());
+    expect(stdout.text).toContain('Credits: 8,951 available');
+    expect(unauthorizedCount).toBe(0);
+    expect(tokenRequests.map((p) => p.get('grant_type'))).toEqual(['refresh_token']);
+    const entry = storeAt().get(server());
+    expect(entry?.tokens).toMatchObject({ access_token: 'good-token', refresh_token: 'refresh-2' });
+    expect(Date.parse(entry?.expiresAt ?? '') - Date.now()).toBeGreaterThan(3500_000);
+  });
+
+  it('a later refresh reuses the discovery metadata cached on disk', async () => {
+    expiring();
+    await creditsCommand(ctx());
+    const firstDiscovery = discoveryHits;
+    expect(firstDiscovery).toBeGreaterThan(0);
+    expiring();
+    await creditsCommand(ctx());
+    expect(tokenRequests).toHaveLength(2);
+    expect(discoveryHits).toBe(firstDiscovery);
+    expect(unauthorizedCount).toBe(0);
+  });
+
+  it('a token with time left is not refreshed', async () => {
+    expiring('refresh-1', 10 * 60_000);
+    storeAt().update(server(), (e) => ({ ...e, tokens: { ...e.tokens!, access_token: 'good-token' } }));
+    await creditsCommand(ctx());
+    expect(tokenRequests).toHaveLength(0);
+  });
+
+  it('a rejected early refresh still means signing in again (exit 3)', async () => {
+    expiring('revoked');
+    const error = (await creditsCommand(ctx()).catch((e: unknown) => e)) as CliError;
+    expect(error.exitCode).toBe(3);
+  });
+
+  it('the second command skips initialize: its only request is the tool call', async () => {
+    await creditsCommand(ctx());
+    expect(rpcLog.filter((m) => m === 'POST initialize')).toHaveLength(1);
+    expect(rpcLog).toContain('POST notifications/initialized');
+    rpcLog = [];
+    await creditsCommand(ctx());
+    expect(rpcLog).toEqual(['POST tools/call']);
+    expect(stdout.text).toContain('Credits: 8,951 available');
+  });
+
+  it('a server that refuses the resumed handshake gets a full initialize and the call once', async () => {
+    await creditsCommand(ctx());
+    rpcLog = [];
+    calls = [];
+    refuseUninitializedOnce = true;
+    await creditsCommand(ctx());
+    expect(rpcLog.slice(0, 3)).toEqual(['POST tools/call', 'POST initialize', 'POST notifications/initialized']);
+    expect(calls.map((c) => c.name)).toEqual(['get_credit_balance']);
+    expect(stdout.text).toContain('Credits: 8,951 available');
+  });
+
+  it('run --dry-run checks the tool on a cached tools/list; an unknown tool drops the cache', async () => {
+    await runCommand(ctx(true), 'generate_image', { jsonArgs: '{"prompt":"fox","selectedModelId":"google/nano-banana-2"}', dryRun: true });
+    await runCommand(ctx(true), 'generate_image', { jsonArgs: '{"prompt":"fox","selectedModelId":"google/nano-banana-2"}', dryRun: true });
+    expect(rpcLog.filter((m) => m === 'POST tools/list')).toHaveLength(1);
+    const cacheFiles = () => readdirSync(join(dir, 'config', 'cache')).filter((f) => f.startsWith('tools-'));
+    expect(cacheFiles()).toHaveLength(1);
+    await runCommand(ctx(), 'no_such_tool', {}).catch(() => undefined);
+    expect(cacheFiles()).toHaveLength(0);
+  });
+
+  it('run --dry-run looks a tool up again when the cached list lacks it', async () => {
+    await runCommand(ctx(true), 'generate_image', { jsonArgs: '{"prompt":"fox","selectedModelId":"google/nano-banana-2"}', dryRun: true });
+    const error = (await runCommand(ctx(), 'not_listed', { dryRun: true }).catch((e: unknown) => e)) as CliError;
+    expect(error.message).toBe('Unknown tool: not_listed');
+    expect(rpcLog.filter((m) => m === 'POST tools/list')).toHaveLength(2);
+  });
+
+  it('the same local file is uploaded once across commands', async () => {
+    const image = join(dir, 'fox.png');
+    writeFileSync(image, 'tiny png');
+    for (let i = 0; i < 2; i++) {
+      await videoCommand(ctx(), ['the', 'fox'], { image, duration: '5', output: join(dir, `clip-${i}.mp4`) });
+    }
+    expect(calls.filter((c) => c.name === 'upload_asset')).toHaveLength(1);
+    expect(calls.filter((c) => c.name === 'generate_video').map((c) => c.args.imageUrl)).toEqual([
+      'https://cdn.aitopia.ai/uploaded.png',
+      'https://cdn.aitopia.ai/uploaded.png',
+    ]);
+    // Changed bytes upload again.
+    writeFileSync(image, 'other png');
+    await videoCommand(ctx(), ['the', 'fox'], { image, duration: '5', output: join(dir, 'clip-2.mp4') });
+    expect(calls.filter((c) => c.name === 'upload_asset')).toHaveLength(2);
+  }, 15_000);
+
+  it('a cached upload the server can no longer read is uploaded again once and the call retried', async () => {
+    const image = join(dir, 'fox.png');
+    writeFileSync(image, 'tiny png');
+    uploadUrls = ['https://cdn.aitopia.ai/old.png', 'https://cdn.aitopia.ai/new.png'];
+    await videoCommand(ctx(), ['the', 'fox'], { image, duration: '5', output: join(dir, 'a.mp4') });
+    goneImageUrl = 'https://cdn.aitopia.ai/old.png';
+    calls = [];
+    await videoCommand(ctx(), ['the', 'fox'], { image, duration: '5', output: join(dir, 'b.mp4') });
+    expect(calls.map((c) => [c.name, c.args.imageUrl])).toEqual([
+      ['generate_video', 'https://cdn.aitopia.ai/old.png'],
+      ['upload_asset', undefined],
+      ['generate_video', 'https://cdn.aitopia.ai/new.png'],
+      ['get_run_status', undefined],
+    ]);
+    // The new URL is what the cache serves next.
+    calls = [];
+    goneImageUrl = '';
+    await videoCommand(ctx(), ['the', 'fox'], { image, duration: '5', output: join(dir, 'c.mp4') });
+    expect(calls[0]?.args.imageUrl).toBe('https://cdn.aitopia.ai/new.png');
+  }, 15_000);
 });

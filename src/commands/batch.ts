@@ -140,7 +140,7 @@ export async function uploadLocalFiles(
       continue;
     }
     if (!ctx.out.jsonMode) ctx.out.note(`Uploading ${ref.path}...`);
-    const result = await uploadSource(session.callTool, full, { allowHttpLoopback: allowHttpLoopback(ctx.serverUrl) });
+    const result = await uploadSource(session.callTool, full, { cache: session.uploads, allowHttpLoopback: allowHttpLoopback(ctx.serverUrl) });
     urls.set(full, result.assetUrl);
   }
   const out = items.map((item) => ({ ...item, ...(item.input ? { input: { ...item.input } } : {}) }));

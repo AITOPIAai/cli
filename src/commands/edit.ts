@@ -248,7 +248,7 @@ export async function editCommand(ctx: Context, source: string, words: string[],
     let assetUrl = kept?.assetUrl ?? source;
     if (!remote && !kept) {
       if (!out.jsonMode) out.note(`Uploading ${source}...`);
-      assetUrl = (await uploadSource(session.callTool, source, { allowHttpLoopback: allowHttpLoopback(ctx.serverUrl) })).assetUrl;
+      assetUrl = (await uploadSource(session.callTool, source, { cache: session.uploads, allowHttpLoopback: allowHttpLoopback(ctx.serverUrl) })).assetUrl;
     }
     const args: Record<string, unknown> = { assetUrl, instruction, ...scope };
     if (options.plan) args.planToken = options.plan;

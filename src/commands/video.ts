@@ -57,7 +57,7 @@ export async function videoCommand(ctx: Context, words: string[], options: Video
         imageUrl = DRY_RUN_IMAGE_URL;
       } else {
         out.note(`Uploading ${options.image}...`);
-        imageUrl = (await uploadSource(session.callTool, options.image, { allowHttpLoopback: allowHttpLoopback(ctx.serverUrl) })).assetUrl;
+        imageUrl = (await uploadSource(session.callTool, options.image, { cache: session.uploads, allowHttpLoopback: allowHttpLoopback(ctx.serverUrl) })).assetUrl;
       }
     }
 

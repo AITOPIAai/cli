@@ -242,7 +242,7 @@ export async function transcribeCommand(ctx: Context, source: string, options: T
       // A local file is uploaded; a video URL from elsewhere is imported (audio_tools takes AITOPIA files).
       if (!out.jsonMode) out.note(`Uploading ${source}...`);
       mediaUrl = (
-        await uploadSource(session.callTool, source, {
+        await uploadSource(session.callTool, source, { cache: session.uploads,
           wait: (o) => settle(ctx, session, o, `Importing ${source}`),
           allowHttpLoopback: allowHttpLoopback(ctx.serverUrl),
         })

@@ -14,7 +14,9 @@ export function supportsDryRun(tool: ToolInfo | undefined): boolean {
 }
 
 async function checkDryRun(session: Session, tool: string): Promise<void> {
-  const info = (await session.listTools()).find((t) => t.name === tool);
+  // The cached tool list (1 h); a tool missing from it is looked up again on the server.
+  const info =
+    (await session.listTools()).find((t) => t.name === tool) ?? (await session.listTools({ fresh: true })).find((t) => t.name === tool);
   if (!info) throw new UsageError(`Unknown tool: ${tool}`, 'List tools with `aitopia tools`.');
   if (!supportsDryRun(info)) {
     throw new UsageError(`${tool} has no price check, so --dry-run cannot be used with it. Nothing was sent.`);

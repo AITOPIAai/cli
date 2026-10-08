@@ -145,7 +145,7 @@ function display(path: string): string {
 async function sourceUrl(ctx: Context, session: Session, source: string): Promise<string> {
   if (isRemoteUrl(source)) return source;
   if (!ctx.out.jsonMode) ctx.out.note(`Uploading ${source}...`);
-  return (await uploadSource(session.callTool, source, { allowHttpLoopback: allowHttpLoopback(ctx.serverUrl) })).assetUrl;
+  return (await uploadSource(session.callTool, source, { cache: session.uploads, allowHttpLoopback: allowHttpLoopback(ctx.serverUrl) })).assetUrl;
 }
 
 export async function analyzeCommand(ctx: Context, source: string, questionWords: string[], options: AnalyzeOptions): Promise<void> {

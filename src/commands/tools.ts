@@ -19,7 +19,8 @@ export function filterTools(tools: ToolInfo[], q: string | undefined): ToolInfo[
 
 export async function toolsCommand(ctx: Context, options: { q?: string }): Promise<void> {
   await withSession(ctx, async (session) => {
-    const tools = filterTools(await session.listTools(), options.q);
+    // Always the server's current list (it changes when an integration is connected); it refreshes the cache.
+    const tools = filterTools(await session.listTools({ fresh: true }), options.q);
     const { out } = ctx;
     if (out.jsonMode) {
       out.json({ count: tools.length, tools: tools.map((t) => ({ name: t.name, description: t.description })) });

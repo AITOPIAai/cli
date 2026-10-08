@@ -23,7 +23,7 @@ export async function uploadCommand(ctx: Context, sources: string[], options: Sc
       if (!out.jsonMode) out.note(`Uploading ${source}...`);
       try {
         const result = await inFlight(() =>
-          uploadSource(session.callTool, source, {
+          uploadSource(session.callTool, source, { cache: session.uploads, refresh: true,
             wait: (o) => settle(ctx, session, o, `Importing ${source}`),
             allowHttpLoopback: allowHttpLoopback(ctx.serverUrl),
             scope,

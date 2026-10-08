@@ -5,7 +5,8 @@ import type {
   OAuthClientMetadata,
   OAuthTokens,
 } from '@modelcontextprotocol/sdk/shared/auth.js';
-import type { CredentialStore } from './credentials.js';
+import { withTokens, type CredentialStore } from './credentials.js';
+import type { ServerCache } from './cache.js';
 import { NotSignedInError } from './errors.js';
 import { isLoopbackHost } from './config.js';
 
@@ -55,6 +56,8 @@ export class StoredSessionProvider implements OAuthClientProvider {
   constructor(
     private readonly store: CredentialStore,
     private readonly serverUrl: string,
+    /** Discovery metadata kept on disk, so a refresh does not discover the server again. */
+    private readonly discoveryCache?: ServerCache<OAuthDiscoveryState>,
   ) {}
 
   get redirectUrl(): string {
@@ -87,7 +90,7 @@ export class StoredSessionProvider implements OAuthClientProvider {
   }
 
   saveTokens(tokens: OAuthTokens): void {
-    this.store.update(this.serverUrl, (entry) => ({ ...entry, tokens }));
+    this.store.update(this.serverUrl, (entry) => withTokens(entry, tokens));
   }
 
   /**
@@ -132,9 +135,10 @@ export class StoredSessionProvider implements OAuthClientProvider {
   }
 
   async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery'): Promise<void> {
-    if (scope === 'discovery') {
+    if (scope === 'discovery' || scope === 'all') {
       this.discovery = undefined;
-      return;
+      this.discoveryCache?.clear(this.serverUrl);
+      if (scope === 'discovery') return;
     }
     if (scope === 'verifier') return;
     if (scope === 'tokens' && (await this.refreshedElsewhere())) return;
@@ -151,10 +155,18 @@ export class StoredSessionProvider implements OAuthClientProvider {
 
   saveDiscoveryState(state: OAuthDiscoveryState): void {
     this.discovery = state;
+    this.discoveryCache?.set(this.serverUrl, state);
   }
 
   discoveryState(): OAuthDiscoveryState | undefined {
+    this.discovery ??= this.discoveryCache?.get(this.serverUrl);
     return this.discovery;
+  }
+
+  /** Forgets the discovery metadata (memory and disk), e.g. after a refresh that used it failed. */
+  dropDiscovery(): void {
+    this.discovery = undefined;
+    this.discoveryCache?.clear(this.serverUrl);
   }
 
   private hadTokens(): boolean {
@@ -181,6 +193,7 @@ export class LoginProvider implements OAuthClientProvider {
     readonly redirectUrl: string,
     private readonly expectedState: string,
     private readonly onAuthorizationUrl: (url: URL) => void | Promise<void>,
+    private readonly discoveryCache?: ServerCache<OAuthDiscoveryState>,
   ) {
     const stored = store.get(serverUrl)?.client;
     if (stored && redirectUrisOf(stored).includes(redirectUrl)) this.client = stored;
@@ -209,7 +222,9 @@ export class LoginProvider implements OAuthClientProvider {
   saveTokens(tokens: OAuthTokens): void {
     this.currentTokens = tokens;
     const client = this.client;
-    this.store.update(this.serverUrl, (entry) => ({ ...entry, client, tokens }));
+    this.store.update(this.serverUrl, (entry) => withTokens({ ...entry, client }, tokens));
+    // Signed in: keep the discovery metadata, so the first refresh skips it.
+    if (this.discovery) this.discoveryCache?.set(this.serverUrl, this.discovery);
   }
 
   async redirectToAuthorization(url: URL): Promise<void> {
