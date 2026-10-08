@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] - 2026-10-08
+
+### Changed
+
+- Faster commands, fewer requests. Small caches now live in `cache/` in the config directory (`~/.aitopia/cache`, or `$AITOPIA_CONFIG_DIR/cache`). Deleting that folder is safe; `aitopia login` and `aitopia logout` clear what was kept for that server.
+  - Sign-in: an access token with less than a minute left is renewed before it is sent, so there is no rejected request first. The server's sign-in details are kept for 24 hours, so a renewal is one request instead of three or four.
+  - Connection: the server's `initialize` answer is kept for an hour. For the AITOPIA server (which keeps no session between requests) the next commands go straight to the tool call, without `initialize` and `notifications/initialized`. If a server turns that down (HTTP 400), the CLI connects the full way once and sends the call again.
+  - Tool list: `aitopia run --dry-run` checks the tool against a tool list kept for an hour (cleared when the server version changes). A tool that is not in the kept list is looked up again on the server, and an unknown-tool error clears the list. `aitopia tools` always asks the server.
+  - Uploads: a local file that was already uploaded (same content and size, same server, project and folder) is not uploaded again for 7 days; the CLI reuses its URL. If a tool then reports that the URL cannot be downloaded (HTTP 404, expired), the file is uploaded again once and the call is sent again with the new URL. `aitopia upload` always uploads, and the new URL is kept.
+
 ## [0.4.1] - 2026-10-08
 
 ### Changed
