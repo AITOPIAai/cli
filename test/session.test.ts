@@ -2205,6 +2205,7 @@ describe('analyze', () => {
     expect(text).toContain('Ad review (7/10):\n  - Hook: Fast cut\n  - Improve: Add a CTA');
     expect(text).toContain('Prompt to re-create it:\n  A cat, cinematic');
     expect(renderAnalysis({ rawText: 'just words' }, true)).toBe('just words\n');
+    expect(renderAnalysis({ summary: 's', note: 'fallback model used' }, false)).toContain('Note:\n  fallback model used');
   });
 });
 

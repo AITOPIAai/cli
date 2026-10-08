@@ -127,6 +127,11 @@ export function renderAnalysis(payload: Record<string, unknown>, markdown: boole
   }
   const raw = str(payload.rawText);
   if (raw && lines.length === 0) para(raw);
+  const note = str(payload.note);
+  if (note) {
+    heading('Note');
+    para(note);
+  }
   return `${lines.join('\n')}\n`;
 }
 
