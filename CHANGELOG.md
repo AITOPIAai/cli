@@ -4,7 +4,11 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [0.4.2] - 2026-10-08
+## [0.5.0] - 2026-10-08
+
+### Added
+
+- `aitopia dub <file|url> --to <language>`: video translation and AI dubbing through the server's `dub_video` tool. The speech is transcribed, translated and spoken in the new language in the speaker's cloned voice (`--consent` or `--yes-clone` confirms it is your own voice or the speaker agreed; without it and without `--voice` the command stops with exit 2) or in one of your voices (`--voice <name|id>`, resolved like `aitopia audio --voice`). `--from` sets the spoken language, `--lipsync` (and `--lipsync-model <id>`) re-syncs the lips, `--max-credits` stops it before it runs. The price is checked first (free) and exactly that plan runs; `--dry-run` lists each step with its price, the total and your balance. Saves `<file name>-<language>.mp4` (or at `-o`) with the translated `.srt` next to it, prints `Next time: --voice <id>` after a clone, the server's warning and note, and `--json` for scripts. A video of at most 60 s; a local file over 100 MB (or one ffprobe measures over 60 s, when ffprobe is installed) stops before it is uploaded.
 
 ### Changed
 

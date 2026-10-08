@@ -2,7 +2,8 @@
 
 Use [AITOPIA](https://aitopia.ai) from your terminal: generate images, video and
 audio, analyze videos (summary, timed scenes, ad review, a prompt to re-create
-them), run editing tools, check your credits and download the results.
+them), translate and dub videos (AI dubbing with voice cloning and lip sync),
+run editing tools, check your credits and download the results.
 
 ```sh
 npm install -g aitopia
@@ -351,6 +352,59 @@ The same analysis works in [AITOPIA chat](https://aitopia.ai) ("analyze this
 video", "score this ad") and in Claude, ChatGPT, Cursor and other MCP clients
 through the `analyze_media` tool.
 
+### Video dubbing: video translation with voice cloning and lip sync
+
+`aitopia dub` translates what is said in a video and dubs it: the speech is
+transcribed, translated, spoken in the new language in the speaker's own voice
+(AI voice cloning) or in one of your voices, and laid back over the video.
+`--lipsync` also re-syncs the lips to the new speech. The translated subtitles
+are saved too.
+
+```sh
+aitopia dub clip.mp4 --to Spanish --consent          # clone the speaker; saves clip-spanish.mp4 + clip-spanish.srt
+aitopia dub clip.mp4 --to de --voice "My voice"      # dub with one of your voices (no clone)
+aitopia dub talk.mp4 --to ja --consent --lipsync -o out/
+aitopia dub clip.mp4 --to fr --dry-run               # each step with its price, the total, your balance
+aitopia dub https://example.com/ad.mp4 --to tr --consent --max-credits 200
+```
+
+Example (`--dry-run`):
+
+```text
+Dub into Spanish (12.3 s video):        (example output)
+  1. Take the sound out of the video · 1 credit
+  2. Transcribe the speech · 2 credits
+  3. Translate into Spanish · 0 credits
+  4. Clone the speaker's voice · 10 credits
+  5. Speak the translation · 5 credits
+  6. Save the translated subtitles (SRT) · 0 credits
+Total: 18 credits
+Balance: 8,951 credits available
+Affordable: yes
+Nothing was run or charged.
+```
+
+- **Voice:** without `--voice`, the speaker's voice is cloned from the video
+  (it needs about 10 s of speech). Cloning needs `--consent` (or `--yes-clone`):
+  you confirm the video is your own voice, or that the speaker gave you
+  permission. Never clone anyone else. The cloned voice is saved in your voices;
+  the CLI prints `Next time: --voice <id>` so the next dub skips the clone.
+- **Price:** checked first (free), then exactly that plan runs; `--max-credits`
+  stops it before anything runs if it costs more. Steps already done for the
+  same video (transcript, translation) are cached for 24 hours and not charged
+  again.
+- **Limits:** a video of at most **60 seconds**; a local file of at most
+  **100 MB** stops before it is uploaded (and one ffprobe measures over 60 s,
+  when ffprobe is installed). The original background sound is not kept.
+- **Output:** `<file name>-<language>.mp4` (or `-o file|dir/`) with the `.srt`
+  next to it; `--json` adds `assetUrl`, `srtUrl`, `transcriptText`,
+  `translatedText`, `voiceId`, `voiceCloned`, `lipsync`, `durationSec`,
+  `totalCredits`, `files`. If a step fails, the steps are listed with what ran;
+  finished steps stay charged.
+
+It runs the server's `dub_video` tool, also available in Claude, ChatGPT, Cursor
+and other MCP clients.
+
 Turn speech into subtitles or text (1 credit; a video costs 1 more because its
 sound is extracted first):
 
@@ -421,6 +475,7 @@ lists the closest current models (`Did you mean: ...`).
 | `aitopia voice-change <file\|url> [--voice preset] [--denoise] [--dry-run]` | Re-voice speech in an audio or video with a preset voice |
 | `aitopia batch <file> [--dry-run] [--wait \| --no-wait]` | Make up to 12 images, videos and audio clips from a JSON file |
 | `aitopia analyze <file\|url> [question...] [--mode summary\|scenes\|ad-review\|prompt] [--language code] [-o file] [--dry-run]` | Video analysis: summary, timed scenes, ad review, a re-create prompt, or an answer (video up to 2 MB) |
+| `aitopia dub <file\|url> --to language [--from l] [--voice name\|id \| --consent] [--lipsync] [--lipsync-model id] [--max-credits n] [--dry-run]` | Video translation and AI dubbing: voice cloning (or your voice), subtitles, optional lip sync (video up to 60 s) |
 | `aitopia transcribe <file\|url> [--language code] [--format srt\|txt\|json] [--words] [--dry-run]` | Speech to subtitles or text |
 | `aitopia projects [list] [--limit n] [--offset n]` | List your projects |
 | `aitopia projects create <name> [--description text]` | Make a project |
