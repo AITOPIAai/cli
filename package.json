@@ -1,7 +1,7 @@
 {
   "name": "aitopia",
-  "version": "0.4.0",
-  "description": "Command-line client for AITOPIA: generate images, video and audio, run editing tools, check credits and download results.",
+  "version": "0.4.1",
+  "description": "Command-line client for AITOPIA: generate images, video and audio, analyze videos (summary, timed scenes, ad review, re-create prompt), run editing tools, check credits and download results.",
   "type": "module",
   "bin": {
     "aitopia": "dist/cli.js"
@@ -28,7 +28,13 @@
     "image-generation",
     "video-generation",
     "audio-generation",
-    "text-to-speech"
+    "text-to-speech",
+    "video-analysis",
+    "video-understanding",
+    "ad-review",
+    "scene-detection",
+    "image-to-prompt",
+    "gemini"
   ],
   "author": "AITOPIA",
   "license": "MIT",

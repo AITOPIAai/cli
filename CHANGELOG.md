@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-10-08
+
+### Changed
+
+- `aitopia analyze` takes a video of at most 2 MB for now (the server's new limit); a bigger local video stops with exit 2 before it is uploaded. Images and audio are not affected.
+
 ## [0.4.0] - 2026-10-08
 
 ### Added

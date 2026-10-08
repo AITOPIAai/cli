@@ -2196,6 +2196,12 @@ describe('analyze', () => {
   it('refuses a bad mode before connecting and reports a failed run', async () => {
     expect((await failure(analyzeCommand(ctx(), 'https://example.com/a.mp4', [], { mode: 'dance' })))?.exitCode).toBe(2);
     expect(calls).toEqual([]);
+    const big = join(dir, 'big.mp4');
+    writeFileSync(big, Buffer.alloc(2 * 1024 * 1024 + 1));
+    const tooBig = await failure(analyzeCommand(ctx(), big, [], {}));
+    expect(tooBig?.exitCode).toBe(2);
+    expect(tooBig?.message).toMatch(/at most 2 MB for now; .*big\.mp4 is 2\.0 MB/);
+    expect(calls).toEqual([]);
     const error = await failure(analyzeCommand(ctx(), 'https://example.com/unreachable.mp4', [], {}));
     expect(error?.exitCode).toBe(1);
   });

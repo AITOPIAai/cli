@@ -1,16 +1,16 @@
 // aitopia analyze <file|url> [question...]: what is in a video, image or audio
 // file, through the server's analyze_media tool (google/gemini-3.5-flash; ~3
-// credits). Modes: summary (default), scenes (every shot, timed), ad-review,
+// credits; a video up to 2 MB). Modes: summary (default), scenes (every shot, timed), ad-review,
 // prompt (a prompt that re-creates it); a question gets an answer. Prints a
 // readable report, or saves it (-o: .md / .txt / .json).
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, extname, relative } from 'node:path';
 import { withSession, type Context } from '../context.js';
 import { isFailed, openInAitopiaUrl } from '../envelope.js';
 import { CliError, EXIT, UsageError, failureToError } from '../errors.js';
 import type { Session } from '../mcp.js';
 import { allowHttpLoopback, deliverEstimate, settle, startActivity } from '../results.js';
-import { assertLocalFile, isRemoteUrl, uploadSource } from '../upload.js';
+import { assertLocalFile, contentTypeFor, isRemoteUrl, uploadSource } from '../upload.js';
 import { paidCall } from './generate.js';
 
 export const ANALYZE_MODES = ['summary', 'scenes', 'ad-review', 'prompt'] as const;
@@ -19,6 +19,8 @@ export const ANALYZE_FORMATS = ['text', 'md', 'json'] as const;
 export type AnalyzeFormat = (typeof ANALYZE_FORMATS)[number];
 /** The server's question limit (characters). */
 export const MAX_QUESTION_CHARS = 2000;
+/** The server's video size limit for analysis (bytes); checked before uploading. */
+export const MAX_ANALYZE_VIDEO_BYTES = 2 * 1024 * 1024;
 
 export interface AnalyzeOptions {
   mode?: string;
@@ -148,7 +150,15 @@ async function sourceUrl(ctx: Context, session: Session, source: string): Promis
 
 export async function analyzeCommand(ctx: Context, source: string, questionWords: string[], options: AnalyzeOptions): Promise<void> {
   if (!source) throw new UsageError('Give the video, image or audio to analyze, e.g. aitopia analyze clip.mp4.');
-  if (!isRemoteUrl(source)) assertLocalFile(source);
+  if (!isRemoteUrl(source)) {
+    assertLocalFile(source);
+    const size = statSync(source).size;
+    if (contentTypeFor(source)?.startsWith('video/') && size > MAX_ANALYZE_VIDEO_BYTES) {
+      throw new UsageError(
+        `analyze takes a video of at most 2 MB for now; ${source} is ${(size / (1024 * 1024)).toFixed(1)} MB. Make it smaller first (shorten it, or lower its resolution or bitrate).`,
+      );
+    }
+  }
   const question = questionWords.join(' ').trim() || undefined;
   if (question && question.length > MAX_QUESTION_CHARS) throw new UsageError(`The question is too long (${question.length} characters; at most ${MAX_QUESTION_CHARS}).`);
   const mode = toolMode(options.mode);

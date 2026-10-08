@@ -1,7 +1,8 @@
 # AITOPIA CLI
 
 Use [AITOPIA](https://aitopia.ai) from your terminal: generate images, video and
-audio, run editing tools, check your credits and download the results.
+audio, analyze videos (summary, timed scenes, ad review, a prompt to re-create
+them), run editing tools, check your credits and download the results.
 
 ```sh
 npm install -g aitopia
@@ -292,20 +293,63 @@ long runs are followed to the end, files are saved and text answers printed.
 `--no-wait` prints the run token instead (exit 5); `--project` / `--folder` save
 the result in a project.
 
-See what is in a video, image or audio file (about 3 credits; `--dry-run` shows the price):
+### Video analysis: summary, scenes, ad review, re-create prompt
+
+`aitopia analyze` watches a video (or looks at an image, or listens to audio)
+and tells you what is in it: what happens, what is said, the text on screen,
+the music and sound. It can also list every scene with its time, score an ad,
+write a prompt that re-creates the clip, or answer your question about it.
 
 ```sh
 aitopia analyze clip.mp4                              # summary, speech, on-screen text, audio
 aitopia analyze clip.mp4 --mode scenes -o shots.json  # every shot with start/end seconds
-aitopia analyze ad.mp4 --mode ad-review               # hook, CTA, pacing, improvements, score
+aitopia analyze ad.mp4 --mode ad-review               # score, hook, message, CTA, pacing, improvements
 aitopia analyze photo.jpg --mode prompt               # a prompt to re-create it
 aitopia analyze clip.mp4 "Is the logo visible in the first 3 seconds?"
+aitopia analyze clip.mp4 --language tr                # the report in Turkish (any language)
 ```
 
-It runs the server's `analyze_media` tool (`google/gemini-3.5-flash`, a video up
-to 45 minutes). `--language tr` writes the analysis in that language (default:
-the question's, else English). The report is printed, or saved with `-o`
-(`.md`, `.txt` or `.json`); nothing is saved in AITOPIA.
+Example (`--mode scenes`):
+
+```text
+Scenes (4):
+  - 0:00-0:01  A colour test pattern with the number 0 on the right.
+  - 0:01-0:02  The number changes to 1.
+  - 0:02-0:03  The number changes to 2.
+  - 0:03-0:04  The number changes to 3.
+
+Audio:
+  A steady, high-pitched test tone.
+```
+
+Example (`--mode ad-review`):
+
+```text
+Ad review (7/10):
+  - Hook: Opens on a calm sunset over the ocean.
+  - Pacing: slow
+  - Strengths: Vibrant, calming colours; smooth camera movement
+  - Improve: No clear call to action
+  - Improve: No visible brand or logo
+```
+
+- **Modes:** `summary` (default), `scenes`, `ad-review`, `prompt`; a question is
+  answered first.
+- **Output:** a readable report, or `-o report.md` / `.txt` / `.json`; `--json`
+  for scripts. JSON fields: `summary`, `answer`, `scenes[]` (`start`, `end`,
+  `description`), `spokenText`, `onScreenText[]`, `audio`, `adReview`,
+  `recreatePrompt`, `modelId`.
+- **Limits:** a video up to **2 MB** for now (and 45 minutes); images and audio
+  files too. A bigger video stops before it is uploaded.
+- **Price:** about 3 credits per analysis; `--dry-run` shows the price and your
+  balance. A failed run is not charged.
+- It runs the server's `analyze_media` tool on `google/gemini-3.5-flash`. When the
+  provider fails a video, it is tried once on `google/gemini-3-flash`. Nothing is
+  saved in AITOPIA.
+
+The same analysis works in [AITOPIA chat](https://aitopia.ai) ("analyze this
+video", "score this ad") and in Claude, ChatGPT, Cursor and other MCP clients
+through the `analyze_media` tool.
 
 Turn speech into subtitles or text (1 credit; a video costs 1 more because its
 sound is extracted first):
@@ -376,6 +420,7 @@ lists the closest current models (`Did you mean: ...`).
 | `aitopia motion <characterImage> <referenceVideo> [--mode animate\|replace] [--prompt text] [--dry-run]` | Make a character perform a video's motion (or replace its person) |
 | `aitopia voice-change <file\|url> [--voice preset] [--denoise] [--dry-run]` | Re-voice speech in an audio or video with a preset voice |
 | `aitopia batch <file> [--dry-run] [--wait \| --no-wait]` | Make up to 12 images, videos and audio clips from a JSON file |
+| `aitopia analyze <file\|url> [question...] [--mode summary\|scenes\|ad-review\|prompt] [--language code] [-o file] [--dry-run]` | Video analysis: summary, timed scenes, ad review, a re-create prompt, or an answer (video up to 2 MB) |
 | `aitopia transcribe <file\|url> [--language code] [--format srt\|txt\|json] [--words] [--dry-run]` | Speech to subtitles or text |
 | `aitopia projects [list] [--limit n] [--offset n]` | List your projects |
 | `aitopia projects create <name> [--description text]` | Make a project |
