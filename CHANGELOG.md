@@ -4,6 +4,12 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-10-08
+
+### Added
+
+- `aitopia analyze <file|url> [question...]`: what is in a video, image or audio file, through the server's `analyze_media` tool (`google/gemini-3.5-flash`, about 3 credits). `--mode summary|scenes|ad-review|prompt` (summary by default; a question is answered first), `--language <code>` for the report's language, `--dry-run` for the price, `-o` to save it as Markdown, text or JSON (by extension or `--format`), `--force`, `--json`. A local file is uploaded first.
+
 ## [0.3.1] - 2026-10-06
 
 ### Fixed

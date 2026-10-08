@@ -33,6 +33,7 @@ import {
 } from '../src/commands/projects.js';
 import { voicesCreateCommand, voicesDeleteCommand, voicesListCommand } from '../src/commands/voices.js';
 import { transcribeCommand } from '../src/commands/transcribe.js';
+import { analyzeCommand, renderAnalysis } from '../src/commands/analyze.js';
 import { agentRunCommand, agentShowCommand, agentsCommand, DRY_RUN_FILE_URL } from '../src/commands/agents.js';
 import { motionCommand, outpaintCommand, reframeCommand, removeBgCommand, upscaleCommand, voiceChangeCommand } from '../src/commands/named.js';
 import { matchNamed } from '../src/resolve.js';
@@ -673,6 +674,22 @@ function tool(name: string, args: Record<string, unknown>) {
       }
       if (video) return ok({ status: 'running', runToken: 'run-1', progress: null, pollAfterMs: 2000 });
       return ok({ status: 'completed', assetUrl: `${base}/files/${name}.png`, assetName: 'result', mediaType: 'image', plan: { summary: name, steps }, totalCredits: total, openInAitopia: 'https://aitopia.ai/c/3' });
+    }
+    case 'analyze_media': {
+      if (args.dryRun === true) return ok({ status: 'estimate', credits: 3, basis: '3 credits per output.', modelId: 'google/gemini-3.5-flash', mode: args.mode ?? 'summary', mediaType: 'video', balance: { creditsForGeneration: balance }, affordable: true });
+      if (String(args.assetUrl).includes('unreachable')) return fail({ status: 'failed', code: 'UPSTREAM_HARD_FAILURE', error: '403 Forbidden for url', retryable: false });
+      return ok({
+        status: 'completed',
+        mediaType: 'video',
+        mode: args.mode ?? (args.question ? 'qa' : 'summary'),
+        ...(args.question ? { answer: 'Yes, at 0:01.' } : {}),
+        summary: 'A cat jumps on a sofa.',
+        scenes: [{ start: 0, end: 2.5, description: 'Cat runs' }, { start: 2.5, end: 65, description: 'Cat jumps' }],
+        onScreenText: ['SALE'],
+        audio: 'upbeat music',
+        modelId: 'google/gemini-3.5-flash',
+        jobId: 'job-a',
+      });
     }
     case 'run_model':
       if (args.dryRun === true) {
@@ -2144,6 +2161,50 @@ describe('new error code hints', () => {
     expect(error.code).toBe(code);
     expect(error.exitCode).toBe(1);
     expect(error.hint).toContain(wording);
+  });
+});
+
+describe('analyze', () => {
+  it('uploads a local file, runs analyze_media and prints a readable report', async () => {
+    const video = join(dir, 'clip.mp4');
+    writeFileSync(video, 'video bytes');
+    await analyzeCommand(ctx(), video, ['Is', 'the', 'logo', 'visible?'], { mode: 'scenes', language: 'tr' });
+    expect(names()).toEqual(['upload_asset', 'analyze_media']);
+    expect(calls[1]?.args).toEqual({ assetUrl: 'https://cdn.aitopia.ai/uploaded.png', mode: 'scenes', question: 'Is the logo visible?', language: 'tr' });
+    expect(stdout.text).toContain('Answer:\n  Yes, at 0:01.');
+    expect(stdout.text).toContain('Scenes (2):');
+    expect(stdout.text).toContain('0:03-1:05  Cat jumps');
+    expect(stdout.text).toContain('Text on screen:\n  - SALE');
+  });
+
+  it('maps ad-review, saves Markdown or JSON by the -o extension, and prices a dry run', async () => {
+    const md = join(dir, 'report.md');
+    await analyzeCommand(ctx(), 'https://example.com/ad.mp4', [], { mode: 'ad-review', output: md });
+    expect(calls.at(-1)?.args).toEqual({ assetUrl: 'https://example.com/ad.mp4', mode: 'ad_review' });
+    expect(readFileSync(md, 'utf8')).toMatch(/^## Summary\nA cat jumps on a sofa\./);
+    expect(stdout.text).toContain('Saved');
+    const json = join(dir, 'report.json');
+    await analyzeCommand(ctx(), 'https://example.com/ad.mp4', [], { output: json });
+    expect(JSON.parse(readFileSync(json, 'utf8')).scenes).toHaveLength(2);
+    expect((await failure(analyzeCommand(ctx(), 'https://example.com/ad.mp4', [], { output: json })))?.exitCode).toBe(2);
+    calls = [];
+    await analyzeCommand(ctx(), 'https://example.com/ad.mp4', [], { dryRun: true });
+    expect(calls[0]?.args.dryRun).toBe(true);
+    expect(stdout.text).toContain('3 credits');
+  });
+
+  it('refuses a bad mode before connecting and reports a failed run', async () => {
+    expect((await failure(analyzeCommand(ctx(), 'https://example.com/a.mp4', [], { mode: 'dance' })))?.exitCode).toBe(2);
+    expect(calls).toEqual([]);
+    const error = await failure(analyzeCommand(ctx(), 'https://example.com/unreachable.mp4', [], {}));
+    expect(error?.exitCode).toBe(1);
+  });
+
+  it('renders the extras (answer, review, prompt) and falls back to the raw text', () => {
+    const text = renderAnalysis({ adReview: { score: 7, hook: 'Fast cut', improvements: ['Add a CTA'] }, recreatePrompt: 'A cat, cinematic' }, false);
+    expect(text).toContain('Ad review (7/10):\n  - Hook: Fast cut\n  - Improve: Add a CTA');
+    expect(text).toContain('Prompt to re-create it:\n  A cat, cinematic');
+    expect(renderAnalysis({ rawText: 'just words' }, true)).toBe('just words\n');
   });
 });
 

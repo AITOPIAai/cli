@@ -292,6 +292,21 @@ long runs are followed to the end, files are saved and text answers printed.
 `--no-wait` prints the run token instead (exit 5); `--project` / `--folder` save
 the result in a project.
 
+See what is in a video, image or audio file (about 3 credits; `--dry-run` shows the price):
+
+```sh
+aitopia analyze clip.mp4                              # summary, speech, on-screen text, audio
+aitopia analyze clip.mp4 --mode scenes -o shots.json  # every shot with start/end seconds
+aitopia analyze ad.mp4 --mode ad-review               # hook, CTA, pacing, improvements, score
+aitopia analyze photo.jpg --mode prompt               # a prompt to re-create it
+aitopia analyze clip.mp4 "Is the logo visible in the first 3 seconds?"
+```
+
+It runs the server's `analyze_media` tool (`google/gemini-3.5-flash`, a video up
+to 45 minutes). `--language tr` writes the analysis in that language (default:
+the question's, else English). The report is printed, or saved with `-o`
+(`.md`, `.txt` or `.json`); nothing is saved in AITOPIA.
+
 Turn speech into subtitles or text (1 credit; a video costs 1 more because its
 sound is extracted first):
 

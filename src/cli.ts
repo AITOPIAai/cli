@@ -43,6 +43,7 @@ import { runCommand } from './commands/run.js';
 import { statusCommand } from './commands/status.js';
 import { toolsCommand } from './commands/tools.js';
 import { TRANSCRIBE_FORMATS, transcribeCommand } from './commands/transcribe.js';
+import { ANALYZE_FORMATS, ANALYZE_MODES, analyzeCommand } from './commands/analyze.js';
 import { uploadCommand } from './commands/upload.js';
 import { videoCommand } from './commands/video.js';
 import { VOICE_CLONE_CREDITS, voicesCreateCommand, voicesDeleteCommand, voicesListCommand } from './commands/voices.js';
@@ -92,6 +93,7 @@ Examples:
   $ aitopia voices create "My voice" sample.m4a --consent
   $ aitopia audio "Thanks for watching." --voice "My voice"
   $ aitopia transcribe interview.mp4 -o interview.srt
+  $ aitopia analyze clip.mp4 --mode scenes
   $ aitopia agents --q "background"
   $ aitopia agent run background-remover --set photo=product.jpg
   $ aitopia video "slow pan over a harbor" --duration 10 --dry-run
@@ -538,6 +540,33 @@ The folder is checked before anything is spent; if saving still fails, the trans
 is printed instead (exit 1), so the paid result is never lost.`,
     )
     .action(action((g, file, opts) => transcribeCommand(createContext(g), file as string, opts as Parameters<typeof transcribeCommand>[2])));
+
+  program
+    .command('analyze')
+    .description('watch a video, look at an image or listen to audio: summary, timed scenes, ad review, a prompt to re-create it, or an answer; ~3 credits')
+    .argument('<file|url>', 'the video, image or audio (a local file is uploaded first) or its https URL')
+    .argument('[question...]', 'a question about it (answered first)')
+    .addOption(new Option('--mode <mode>', 'summary (default), scenes (every shot with start/end), ad-review, or prompt').choices([...ANALYZE_MODES]))
+    .option('--language <code>', 'language to write the analysis in, e.g. en, tr (default: the question\'s, else English)')
+    .addOption(new Option('--format <format>', 'text (default), md, or json (default: from the -o extension)').choices([...ANALYZE_FORMATS]))
+    .option('--dry-run', DRY_RUN_HELP)
+    .option('-o, --output <path>', 'save the report to a file (.md, .txt or .json) instead of printing it')
+    .option('--force', 'overwrite an existing file')
+    .addHelpText(
+      'after',
+      `
+Examples:
+  $ aitopia analyze clip.mp4                              # what is in it
+  $ aitopia analyze clip.mp4 --mode scenes -o shots.json  # every shot with start/end seconds
+  $ aitopia analyze ad.mp4 --mode ad-review               # hook, CTA, pacing, what to improve, score
+  $ aitopia analyze photo.jpg --mode prompt               # a prompt to re-create it
+  $ aitopia analyze clip.mp4 "Is the logo visible in the first 3 seconds?"
+
+Runs google/gemini-3.5-flash on the file (a video up to 45 minutes). A run costs what
+the model lists (3 credits today; --dry-run shows the price). Nothing is saved in AITOPIA:
+the analysis is printed, or saved with -o. For exact timed speech use aitopia transcribe.`,
+    )
+    .action(action((g, file, question, opts) => analyzeCommand(createContext(g), file as string, (question as string[]) ?? [], opts as Parameters<typeof analyzeCommand>[3])));
 
   const projects = program
     .command('projects')
